@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+﻿from typing import Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -73,6 +73,7 @@ class CDT(nn.Module):
         self.embedding_dim = embedding_dim
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.n_actions = action_dim
         self.episode_len = episode_len
         self.max_action = max_action
         if cost_transform:
@@ -94,7 +95,10 @@ class CDT(nn.Module):
             self.timestep_emb = nn.Embedding(episode_len + seq_len, embedding_dim)
 
         self.state_emb = nn.Linear(state_dim, embedding_dim)
-        self.action_emb = nn.Linear(action_dim, embedding_dim)
+        if self.stochastic:
+            self.action_emb = nn.Linear(action_dim, embedding_dim)
+        else:
+            self.action_emb = nn.Embedding(self.n_actions, embedding_dim)
 
         self.seq_repeat = 2
         self.use_rew = use_rew
@@ -166,7 +170,7 @@ class CDT(nn.Module):
     def forward(
             self,
             states: torch.Tensor,  # [batch_size, seq_len, state_dim]
-            actions: torch.Tensor,  # [batch_size, seq_len, action_dim]
+            actions: torch.Tensor,  # [batch_size, seq_len] ids (discrete) or [batch_size, seq_len, action_dim]
             returns_to_go: torch.Tensor,  # [batch_size, seq_len]
             costs_to_go: torch.Tensor,  # [batch_size, seq_len]
             time_steps: torch.Tensor,  # [batch_size, seq_len]
@@ -180,7 +184,15 @@ class CDT(nn.Module):
         else:
             timestep_emb = 0.0
         state_emb = self.state_emb(states) + timestep_emb
-        act_emb = self.action_emb(actions) + timestep_emb
+        if self.stochastic:
+            act_emb = self.action_emb(actions) + timestep_emb
+        else:
+            if actions.ndim == 3:
+                action_ids = torch.argmax(actions, dim=-1)
+            else:
+                action_ids = actions
+            action_ids = action_ids.long().clamp(0, self.n_actions - 1)
+            act_emb = self.action_emb(action_ids) + timestep_emb
 
         seq_list = [state_emb, act_emb]
 
@@ -305,7 +317,12 @@ class CDTTrainer:
             loss_state_weight: float = 0.0,
             cost_reverse: bool = False,
             no_entropy: bool = False,
-            device="cpu") -> None:
+            entropy_coef: float = 1e-3,
+            device="cpu",
+            *,
+            use_amp: bool = True,
+            amp_dtype: torch.dtype = torch.float16,
+            use_fused_adamw: bool = True) -> None:
         self.model = model
         self.logger = logger
         self.env = env
@@ -317,13 +334,25 @@ class CDTTrainer:
         self.state_weight = loss_state_weight
         self.cost_reverse = cost_reverse
         self.no_entropy = no_entropy
+        self.entropy_coef = entropy_coef
 
-        self.optim = torch.optim.AdamW(
-            self.model.parameters(),
+        self._is_cuda = str(device).startswith("cuda") and torch.cuda.is_available()
+        self.use_amp = bool(use_amp) and self._is_cuda
+        self.amp_dtype = amp_dtype if self.use_amp else torch.float32
+
+        optim_kwargs = dict(
+            params=self.model.parameters(),
             lr=learning_rate,
             weight_decay=weight_decay,
             betas=betas,
         )
+        if use_fused_adamw and self._is_cuda:
+            try:
+                self.optim = torch.optim.AdamW(**optim_kwargs, fused=True)  # type: ignore[arg-type]
+            except TypeError:
+                self.optim = torch.optim.AdamW(**optim_kwargs)
+        else:
+            self.optim = torch.optim.AdamW(**optim_kwargs)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optim,
             lambda steps: min((steps + 1) / lr_warmup_steps, 1),
@@ -339,65 +368,110 @@ class CDTTrainer:
 
         self.beta_dist = Beta(torch.tensor(2, dtype=torch.float, device=self.device),
                               torch.tensor(5, dtype=torch.float, device=self.device))
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
     def train_one_step(self, states, actions, returns, costs_return, time_steps, mask,
                        episode_cost, costs):
+        mask = mask.to(dtype=states.dtype)
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
-        action_preds, cost_preds, state_preds = self.model(
-            states=states,
-            actions=actions,
-            returns_to_go=returns,
-            costs_to_go=costs_return,
-            time_steps=time_steps,
-            padding_mask=padding_mask,
-            episode_cost=episode_cost,
-        )
 
-        if self.stochastic:
-            log_likelihood = action_preds.log_prob(actions)[mask > 0].mean()
-            entropy = action_preds.entropy()[mask > 0].mean()
-            entropy_reg = self.model.temperature().detach()
-            entropy_reg_item = entropy_reg.item()
-            if self.no_entropy:
-                entropy_reg = 0.0
-                entropy_reg_item = 0.0
-            act_loss = -(log_likelihood + entropy_reg * entropy)
-            self.logger.store(tab="train",
-                              nll=-log_likelihood.item(),
-                              ent=entropy.item(),
-                              ent_reg=entropy_reg_item)
+        self.optim.zero_grad(set_to_none=True)
+
+        with torch.autocast(
+                device_type="cuda",
+                dtype=self.amp_dtype,
+                enabled=self.use_amp):
+            action_preds, cost_preds, state_preds = self.model(
+                states=states,
+                actions=actions,
+                returns_to_go=returns,
+                costs_to_go=costs_return,
+                time_steps=time_steps,
+                padding_mask=padding_mask,
+                episode_cost=episode_cost,
+            )
+
+            if self.stochastic:
+                log_likelihood = action_preds.log_prob(actions)[mask > 0].mean()
+                entropy = action_preds.entropy()[mask > 0].mean()
+                entropy_reg = self.model.temperature().detach()
+                entropy_reg_item = entropy_reg.item()
+                if self.no_entropy:
+                    entropy_reg = 0.0
+                    entropy_reg_item = 0.0
+                act_loss = -(log_likelihood + entropy_reg * entropy)
+                self.logger.store(tab="train",
+                                  nll=-log_likelihood.item(),
+                                  ent=entropy.item(),
+                                  ent_reg=entropy_reg_item)
+            else:
+                logits_flat = action_preds.reshape(-1, self.model.n_actions)
+                action_targets = actions.long().reshape(-1).clamp(
+                    0, self.model.n_actions - 1)
+                ce_loss = F.cross_entropy(logits_flat, action_targets,
+                                          reduction="none").reshape_as(mask)
+
+                if self.no_entropy:
+                    action_token_loss = ce_loss
+                else:
+                    log_probs = F.log_softmax(action_preds, dim=-1)
+                    probs = log_probs.exp()
+                    entropy = -(probs * log_probs).sum(dim=-1)
+                    action_token_loss = ce_loss - self.entropy_coef * entropy
+
+                valid_mass = torch.clamp(mask.sum(), min=1.0)
+                act_loss = (action_token_loss * mask).sum() / valid_mass
+
+            cost_targets = costs.flatten().long().detach().clamp(0, 1)
+            cost_logits = cost_preds.reshape(-1, 2)
+            cost_mask = mask.flatten()
+            cost_mass = float(cost_mask.sum().item())
+            if cost_mass <= 0.0:
+                cost_loss = torch.zeros((), dtype=states.dtype, device=states.device)
+                acc = torch.zeros((), dtype=states.dtype, device=states.device)
+            else:
+                nll = F.nll_loss(cost_logits, cost_targets, reduction="none")
+                cost_den = torch.clamp(cost_mask.sum(), min=1.0)
+                cost_loss = (nll * cost_mask).sum() / cost_den
+                pred = torch.argmax(cost_logits, dim=1)
+                correct = (pred == cost_targets).to(cost_mask.dtype) * cost_mask
+                acc = correct.sum() / cost_den
+
+            if state_preds.shape[1] <= 1:
+                state_loss = torch.zeros((),
+                                         dtype=states.dtype,
+                                         device=states.device)
+            else:
+                state_mask = mask[:, :-1]
+                state_mass = float(state_mask.sum().item())
+                if state_mass <= 0.0:
+                    state_loss = torch.zeros((),
+                                             dtype=states.dtype,
+                                             device=states.device)
+                else:
+                    state_mse = F.mse_loss(
+                        state_preds[:, :-1],
+                        states[:, 1:].detach(),
+                        reduction="none",
+                    ).mean(dim=-1)
+                    state_den = torch.clamp(state_mask.sum(), min=1.0)
+                    state_loss = (state_mse * state_mask).sum() / state_den
+
+            loss = act_loss + self.cost_weight * cost_loss + self.state_weight * state_loss
+
+        if self.use_amp:
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optim)
+            if self.clip_grad is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+            self.scaler.step(self.optim)
+            self.scaler.update()
         else:
-            act_loss = F.mse_loss(action_preds, actions.detach(), reduction="none")
-            # [batch_size, seq_len, action_dim] * [batch_size, seq_len, 1]
-            act_loss = (act_loss * mask.unsqueeze(-1)).mean()
-
-        # cost_preds: [batch_size * seq_len, 2], costs: [batch_size * seq_len]
-        cost_preds = cost_preds.reshape(-1, 2)
-        costs = costs.flatten().long().detach()
-        cost_loss = F.nll_loss(cost_preds, costs, reduction="none")
-        # cost_loss = F.mse_loss(cost_preds, costs.detach(), reduction="none")
-        cost_loss = (cost_loss * mask.flatten()).mean()
-        # compute the accuracy, 0 value, 1 indice, [batch_size, seq_len]
-        pred = cost_preds.data.max(dim=1)[1]
-        correct = pred.eq(costs.data.view_as(pred)) * mask.flatten()
-        correct = correct.sum()
-        total_num = mask.sum()
-        acc = correct / total_num
-
-        # [batch_size, seq_len, state_dim]
-        state_loss = F.mse_loss(state_preds[:, :-1],
-                                states[:, 1:].detach(),
-                                reduction="none")
-        state_loss = (state_loss * mask[:, :-1].unsqueeze(-1)).mean()
-
-        loss = act_loss + self.cost_weight * cost_loss + self.state_weight * state_loss
-
-        self.optim.zero_grad()
-        loss.backward()
-        if self.clip_grad is not None:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
-        self.optim.step()
+            loss.backward()
+            if self.clip_grad is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
+            self.optim.step()
 
         if self.stochastic:
             self.log_temperature_optimizer.zero_grad()
@@ -449,11 +523,17 @@ class CDTTrainer:
                              model.state_dim,
                              dtype=torch.float,
                              device=self.device)
-        actions = torch.zeros(1,
-                              model.episode_len,
-                              model.action_dim,
-                              dtype=torch.float,
-                              device=self.device)
+        if self.stochastic:
+            actions = torch.zeros(1,
+                                  model.episode_len,
+                                  model.action_dim,
+                                  dtype=torch.float,
+                                  device=self.device)
+        else:
+            actions = torch.zeros(1,
+                                  model.episode_len,
+                                  dtype=torch.long,
+                                  device=self.device)
         returns = torch.zeros(1,
                               model.episode_len + 1,
                               dtype=torch.float,
@@ -491,8 +571,11 @@ class CDTTrainer:
             acts, _, _ = model(s, a, r, c, t, None, epi_cost)
             if self.stochastic:
                 acts = acts.mean
-            acts = acts.clamp(-self.max_action, self.max_action)
-            act = acts[0, -1].cpu().numpy()
+                acts = acts.clamp(-self.max_action, self.max_action)
+                act = acts[0, -1].cpu().numpy()
+            else:
+                action_id = torch.argmax(acts[:, -1], dim=-1)
+                act = int(action_id.item())
             # act = self.get_ensemble_action(1, model, s, a, r, c, t, epi_cost)
 
             obs_next, reward, terminated, truncated, info = env.step(act)
@@ -501,7 +584,10 @@ class CDTTrainer:
             else:
                 cost = info["cost"] * self.cost_scale
             # at step t, we predict a_t, get s_{t + 1}, r_{t + 1}
-            actions[:, step] = torch.as_tensor(act)
+            if self.stochastic:
+                actions[:, step] = torch.as_tensor(act)
+            else:
+                actions[:, step] = torch.as_tensor(act, dtype=torch.long)
             states[:, step + 1] = torch.as_tensor(obs_next)
             returns[:, step + 1] = torch.as_tensor(returns[:, step] - reward)
             costs[:, step + 1] = torch.as_tensor(costs[:, step] - cost)
@@ -531,12 +617,15 @@ class CDTTrainer:
         acts, _, _ = model(s, a, r, c, t, None, epi_cost)
         if self.stochastic:
             acts = acts.mean
+            # [size, seq_len, act_dim]
+            acts = torch.mean(acts, dim=0, keepdim=True)
+            acts = acts.clamp(-self.max_action, self.max_action)
+            act = acts[0, -1].cpu().numpy()
+            return act
 
-        # [size, seq_len, act_dim]
-        acts = torch.mean(acts, dim=0, keepdim=True)
-        acts = acts.clamp(-self.max_action, self.max_action)
-        act = acts[0, -1].cpu().numpy()
-        return act
+        logits = torch.mean(acts, dim=0, keepdim=True)
+        action_id = torch.argmax(logits[:, -1], dim=-1)
+        return int(action_id.item())
 
     def collect_random_rollouts(self, num_rollouts):
         episode_rets = []
@@ -552,3 +641,4 @@ class CDTTrainer:
                     break
             episode_rets.append(episode_ret)
         return np.mean(episode_rets)
+
