@@ -1,4 +1,4 @@
-﻿from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -322,7 +322,9 @@ class CDTTrainer:
             *,
             use_amp: bool = True,
             amp_dtype: torch.dtype = torch.float16,
-            use_fused_adamw: bool = True) -> None:
+            use_fused_adamw: bool = True,
+            cuda_graph_enabled: bool = False,
+            cuda_graph_warmup_steps: int = 32) -> None:
         self.model = model
         self.logger = logger
         self.env = env
@@ -339,6 +341,8 @@ class CDTTrainer:
         self._is_cuda = str(device).startswith("cuda") and torch.cuda.is_available()
         self.use_amp = bool(use_amp) and self._is_cuda
         self.amp_dtype = amp_dtype if self.use_amp else torch.float32
+        self.cuda_graph_enabled = bool(cuda_graph_enabled) and self._is_cuda
+        self.cuda_graph_warmup_steps = max(0, int(cuda_graph_warmup_steps))
 
         optim_kwargs = dict(
             params=self.model.parameters(),
@@ -346,6 +350,8 @@ class CDTTrainer:
             weight_decay=weight_decay,
             betas=betas,
         )
+        if self.cuda_graph_enabled:
+            optim_kwargs["capturable"] = True
         if use_fused_adamw and self._is_cuda:
             try:
                 self.optim = torch.optim.AdamW(**optim_kwargs, fused=True)  # type: ignore[arg-type]
@@ -368,128 +374,286 @@ class CDTTrainer:
 
         self.beta_dist = Beta(torch.tensor(2, dtype=torch.float, device=self.device),
                               torch.tensor(5, dtype=torch.float, device=self.device))
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        else:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self._cuda_graph_active = False
+        self._cuda_graph_failed_reason: Optional[str] = None
+        self._cuda_graph: Optional[torch.cuda.CUDAGraph] = None
+        self._cuda_graph_static: Optional[dict[str, torch.Tensor]] = None
+        self._cuda_graph_metrics: Optional[dict[str, torch.Tensor]] = None
 
-    def train_one_step(self, states, actions, returns, costs_return, time_steps, mask,
-                       episode_cost, costs):
+    def is_cuda_graph_active(self) -> bool:
+        return bool(self._cuda_graph_active)
+
+    def cuda_graph_status(self) -> str:
+        if self._cuda_graph_active:
+            return "enabled"
+        if self._cuda_graph_failed_reason:
+            return f"disabled ({self._cuda_graph_failed_reason})"
+        if not self.cuda_graph_enabled:
+            return "disabled (config)"
+        if not self._is_cuda:
+            return "disabled (non-cuda)"
+        return "disabled (not initialized)"
+
+    def disable_cuda_graph(self, reason: str) -> None:
+        self._cuda_graph_active = False
+        self._cuda_graph_failed_reason = str(reason)
+
+    def _compute_losses(
+        self,
+        *,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        returns: torch.Tensor,
+        costs_return: torch.Tensor,
+        time_steps: torch.Tensor,
+        mask: torch.Tensor,
+        episode_cost: torch.Tensor,
+        costs: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
         mask = mask.to(dtype=states.dtype)
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
-        self.optim.zero_grad(set_to_none=True)
+        action_preds, cost_preds, state_preds = self.model(
+            states=states,
+            actions=actions,
+            returns_to_go=returns,
+            costs_to_go=costs_return,
+            time_steps=time_steps,
+            padding_mask=padding_mask,
+            episode_cost=episode_cost,
+        )
 
-        with torch.autocast(
-                device_type="cuda",
-                dtype=self.amp_dtype,
-                enabled=self.use_amp):
-            action_preds, cost_preds, state_preds = self.model(
-                states=states,
-                actions=actions,
-                returns_to_go=returns,
-                costs_to_go=costs_return,
-                time_steps=time_steps,
-                padding_mask=padding_mask,
-                episode_cost=episode_cost,
-            )
+        extra_metrics: dict[str, torch.Tensor] = {}
+        if self.stochastic:
+            log_likelihood = action_preds.log_prob(actions)[mask > 0].mean()
+            entropy = action_preds.entropy()[mask > 0].mean()
+            entropy_reg = self.model.temperature().detach()
+            if self.no_entropy:
+                entropy_reg = torch.zeros_like(entropy_reg)
+            act_loss = -(log_likelihood + entropy_reg * entropy)
+            extra_metrics = {
+                "nll": -log_likelihood,
+                "ent": entropy,
+                "ent_reg": entropy_reg,
+            }
+        else:
+            logits_flat = action_preds.reshape(-1, self.model.n_actions)
+            action_targets = actions.long().reshape(-1).clamp(0, self.model.n_actions - 1)
+            ce_loss = F.cross_entropy(logits_flat, action_targets,
+                                      reduction="none").reshape_as(mask)
 
-            if self.stochastic:
-                log_likelihood = action_preds.log_prob(actions)[mask > 0].mean()
-                entropy = action_preds.entropy()[mask > 0].mean()
-                entropy_reg = self.model.temperature().detach()
-                entropy_reg_item = entropy_reg.item()
-                if self.no_entropy:
-                    entropy_reg = 0.0
-                    entropy_reg_item = 0.0
-                act_loss = -(log_likelihood + entropy_reg * entropy)
-                self.logger.store(tab="train",
-                                  nll=-log_likelihood.item(),
-                                  ent=entropy.item(),
-                                  ent_reg=entropy_reg_item)
+            if self.no_entropy:
+                action_token_loss = ce_loss
             else:
-                logits_flat = action_preds.reshape(-1, self.model.n_actions)
-                action_targets = actions.long().reshape(-1).clamp(
-                    0, self.model.n_actions - 1)
-                ce_loss = F.cross_entropy(logits_flat, action_targets,
-                                          reduction="none").reshape_as(mask)
+                log_probs = F.log_softmax(action_preds, dim=-1)
+                probs = log_probs.exp()
+                entropy = -(probs * log_probs).sum(dim=-1)
+                action_token_loss = ce_loss - self.entropy_coef * entropy
 
-                if self.no_entropy:
-                    action_token_loss = ce_loss
-                else:
-                    log_probs = F.log_softmax(action_preds, dim=-1)
-                    probs = log_probs.exp()
-                    entropy = -(probs * log_probs).sum(dim=-1)
-                    action_token_loss = ce_loss - self.entropy_coef * entropy
+            valid_mass = torch.clamp(mask.sum(), min=1.0)
+            act_loss = (action_token_loss * mask).sum() / valid_mass
 
-                valid_mass = torch.clamp(mask.sum(), min=1.0)
-                act_loss = (action_token_loss * mask).sum() / valid_mass
+        cost_targets = costs.flatten().long().detach().clamp(0, 1)
+        cost_logits = cost_preds.reshape(-1, 2)
+        cost_mask = mask.flatten()
+        cost_den = torch.clamp(cost_mask.sum(), min=1.0)
+        nll = F.nll_loss(cost_logits, cost_targets, reduction="none")
+        cost_loss_raw = (nll * cost_mask).sum() / cost_den
+        pred = torch.argmax(cost_logits, dim=1)
+        correct = (pred == cost_targets).to(cost_mask.dtype) * cost_mask
+        acc_raw = correct.sum() / cost_den
+        has_cost_tokens = cost_mask.sum() > 0
+        zero = torch.zeros((), dtype=states.dtype, device=states.device)
+        cost_loss = torch.where(has_cost_tokens, cost_loss_raw, zero)
+        acc = torch.where(has_cost_tokens, acc_raw, zero)
 
-            cost_targets = costs.flatten().long().detach().clamp(0, 1)
-            cost_logits = cost_preds.reshape(-1, 2)
-            cost_mask = mask.flatten()
-            cost_mass = float(cost_mask.sum().item())
-            if cost_mass <= 0.0:
-                cost_loss = torch.zeros((), dtype=states.dtype, device=states.device)
-                acc = torch.zeros((), dtype=states.dtype, device=states.device)
-            else:
-                nll = F.nll_loss(cost_logits, cost_targets, reduction="none")
-                cost_den = torch.clamp(cost_mask.sum(), min=1.0)
-                cost_loss = (nll * cost_mask).sum() / cost_den
-                pred = torch.argmax(cost_logits, dim=1)
-                correct = (pred == cost_targets).to(cost_mask.dtype) * cost_mask
-                acc = correct.sum() / cost_den
+        if state_preds.shape[1] <= 1:
+            state_loss = zero
+        else:
+            state_mask = mask[:, :-1]
+            state_den = torch.clamp(state_mask.sum(), min=1.0)
+            state_mse = F.mse_loss(
+                state_preds[:, :-1],
+                states[:, 1:].detach(),
+                reduction="none",
+            ).mean(dim=-1)
+            state_loss_raw = (state_mse * state_mask).sum() / state_den
+            has_state_tokens = state_mask.sum() > 0
+            state_loss = torch.where(has_state_tokens, state_loss_raw, zero)
 
-            if state_preds.shape[1] <= 1:
-                state_loss = torch.zeros((),
-                                         dtype=states.dtype,
-                                         device=states.device)
-            else:
-                state_mask = mask[:, :-1]
-                state_mass = float(state_mask.sum().item())
-                if state_mass <= 0.0:
-                    state_loss = torch.zeros((),
-                                             dtype=states.dtype,
-                                             device=states.device)
-                else:
-                    state_mse = F.mse_loss(
-                        state_preds[:, :-1],
-                        states[:, 1:].detach(),
-                        reduction="none",
-                    ).mean(dim=-1)
-                    state_den = torch.clamp(state_mask.sum(), min=1.0)
-                    state_loss = (state_mse * state_mask).sum() / state_den
+        loss = act_loss + self.cost_weight * cost_loss + self.state_weight * state_loss
+        return {
+            "loss": loss,
+            "act_loss": act_loss,
+            "cost_loss": cost_loss,
+            "cost_acc": acc,
+            "state_loss": state_loss,
+            **extra_metrics,
+        }
 
-            loss = act_loss + self.cost_weight * cost_loss + self.state_weight * state_loss
-
+    def _backward_only(self, loss: torch.Tensor) -> None:
         if self.use_amp:
             self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+    def _apply_optimizer_step(self) -> None:
+        if self.use_amp:
             self.scaler.unscale_(self.optim)
             if self.clip_grad is not None:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
             self.scaler.step(self.optim)
             self.scaler.update()
         else:
-            loss.backward()
             if self.clip_grad is not None:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad)
             self.optim.step()
 
-        if self.stochastic:
-            self.log_temperature_optimizer.zero_grad()
-            temperature_loss = (self.model.temperature() *
-                                (entropy - self.model.target_entropy).detach())
-            temperature_loss.backward()
-            self.log_temperature_optimizer.step()
+    def _update_temperature(self, metrics: dict[str, torch.Tensor]) -> None:
+        if not self.stochastic:
+            return
+        entropy = metrics.get("ent")
+        if entropy is None:
+            return
+        self.log_temperature_optimizer.zero_grad()
+        temperature_loss = (self.model.temperature() *
+                            (entropy - self.model.target_entropy).detach())
+        temperature_loss.backward()
+        self.log_temperature_optimizer.step()
 
+    def try_enable_cuda_graph(self, batch: dict[str, torch.Tensor]) -> tuple[bool, str]:
+        if self._cuda_graph_active:
+            return True, "already enabled"
+        if not self.cuda_graph_enabled:
+            return False, "cuda graphs disabled by config"
+        if not self._is_cuda:
+            return False, "cuda graphs require CUDA device"
+        required = {
+            "states",
+            "actions",
+            "returns",
+            "costs_return",
+            "time_steps",
+            "mask",
+            "episode_cost",
+            "costs",
+        }
+        if not required.issubset(batch):
+            missing = sorted(required.difference(batch.keys()))
+            reason = f"missing batch keys: {missing}"
+            self.disable_cuda_graph(reason)
+            return False, reason
+        if any(v.device.type != "cuda" for v in batch.values() if torch.is_tensor(v)):
+            reason = "all batch tensors must be on CUDA for graph capture"
+            self.disable_cuda_graph(reason)
+            return False, reason
+        try:
+            static = {k: torch.empty_like(v) for k, v in batch.items()}
+            for key, value in batch.items():
+                static[key].copy_(value)
+            self._cuda_graph_static = static
+
+            self.optim.zero_grad(set_to_none=True)
+            graph = torch.cuda.CUDAGraph()
+            torch.cuda.synchronize()
+            with torch.cuda.graph(graph):
+                self.optim.zero_grad(set_to_none=True)
+                with torch.autocast(
+                        device_type="cuda",
+                        dtype=self.amp_dtype,
+                        enabled=self.use_amp):
+                    self._cuda_graph_metrics = self._compute_losses(
+                        states=static["states"],
+                        actions=static["actions"],
+                        returns=static["returns"],
+                        costs_return=static["costs_return"],
+                        time_steps=static["time_steps"],
+                        mask=static["mask"],
+                        episode_cost=static["episode_cost"],
+                        costs=static["costs"],
+                    )
+                self._backward_only(self._cuda_graph_metrics["loss"])
+            self._cuda_graph = graph
+            self._cuda_graph_active = True
+            self._cuda_graph_failed_reason = None
+            return True, "enabled"
+        except Exception as exc:
+            self._cuda_graph = None
+            self._cuda_graph_static = None
+            self._cuda_graph_metrics = None
+            reason = f"capture failed: {exc}"
+            self.disable_cuda_graph(reason)
+            return False, reason
+
+    def _store_metrics(
+        self, metrics: dict[str, torch.Tensor], *, store_metrics: bool
+    ) -> None:
+        if not store_metrics:
+            return
+        payload: dict[str, Any] = {
+            "all_loss": metrics["loss"].detach().item(),
+            "act_loss": metrics["act_loss"].detach().item(),
+            "cost_loss": metrics["cost_loss"].detach().item(),
+            "cost_acc": metrics["cost_acc"].detach().item(),
+            "state_loss": metrics["state_loss"].detach().item(),
+            "train_lr": self.scheduler.get_last_lr()[0],
+        }
+        if self.stochastic:
+            if "nll" in metrics:
+                payload["nll"] = metrics["nll"].detach().item()
+            if "ent" in metrics:
+                payload["ent"] = metrics["ent"].detach().item()
+            if "ent_reg" in metrics:
+                payload["ent_reg"] = metrics["ent_reg"].detach().item()
+        self.logger.store(tab="train", **payload)
+
+    def train_one_step(self, states, actions, returns, costs_return, time_steps, mask,
+                       episode_cost, costs, *, store_metrics: bool = True):
+        if self._cuda_graph_active:
+            assert self._cuda_graph_static is not None
+            assert self._cuda_graph is not None
+            assert self._cuda_graph_metrics is not None
+            self._cuda_graph_static["states"].copy_(states)
+            self._cuda_graph_static["actions"].copy_(actions)
+            self._cuda_graph_static["returns"].copy_(returns)
+            self._cuda_graph_static["costs_return"].copy_(costs_return)
+            self._cuda_graph_static["time_steps"].copy_(time_steps)
+            self._cuda_graph_static["mask"].copy_(mask)
+            self._cuda_graph_static["episode_cost"].copy_(episode_cost)
+            self._cuda_graph_static["costs"].copy_(costs)
+            self._cuda_graph.replay()
+            metrics = self._cuda_graph_metrics
+            self._apply_optimizer_step()
+            self._update_temperature(metrics)
+            self.scheduler.step()
+            self._store_metrics(metrics, store_metrics=store_metrics)
+            return
+
+        self.optim.zero_grad(set_to_none=True)
+        with torch.autocast(
+                device_type="cuda",
+                dtype=self.amp_dtype,
+                enabled=self.use_amp):
+            metrics = self._compute_losses(
+                states=states,
+                actions=actions,
+                returns=returns,
+                costs_return=costs_return,
+                time_steps=time_steps,
+                mask=mask,
+                episode_cost=episode_cost,
+                costs=costs,
+            )
+        self._backward_only(metrics["loss"])
+        self._apply_optimizer_step()
+        self._update_temperature(metrics)
         self.scheduler.step()
-        self.logger.store(
-            tab="train",
-            all_loss=loss.item(),
-            act_loss=act_loss.item(),
-            cost_loss=cost_loss.item(),
-            cost_acc=acc.item(),
-            state_loss=state_loss.item(),
-            train_lr=self.scheduler.get_last_lr()[0],
-        )
+        self._store_metrics(metrics, store_metrics=store_metrics)
 
     def evaluate(self, num_rollouts, target_return, target_cost):
         """
