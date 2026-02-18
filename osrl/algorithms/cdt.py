@@ -343,6 +343,15 @@ class CDTTrainer:
             weight_decay=weight_decay,
             betas=betas,
         )
+        if self.cuda_graph_enabled:
+            optim_kwargs["capturable"] = True
+        if use_fused_adamw and self._is_cuda:
+            try:
+                self.optim = torch.optim.AdamW(**optim_kwargs, fused=True)  # type: ignore[arg-type]
+            except TypeError:
+                self.optim = torch.optim.AdamW(**optim_kwargs)
+        else:
+            self.optim = torch.optim.AdamW(**optim_kwargs)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optim,
             lambda steps: min((steps + 1) / lr_warmup_steps, 1),
@@ -561,6 +570,10 @@ class CDTTrainer:
         logits = torch.mean(action_logits, dim=0, keepdim=True)
         return int(torch.argmax(logits[0, -1]).item())
 
+        logits = torch.mean(acts, dim=0, keepdim=True)
+        action_id = torch.argmax(logits[:, -1], dim=-1)
+        return int(action_id.item())
+
     def collect_random_rollouts(self, num_rollouts):
         if self.env is None:
             raise ValueError(
@@ -578,3 +591,4 @@ class CDTTrainer:
                     break
             episode_rets.append(episode_ret)
         return np.mean(episode_rets)
+
