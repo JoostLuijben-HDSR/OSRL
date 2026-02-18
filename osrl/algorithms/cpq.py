@@ -4,10 +4,43 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from fsrl.utils import DummyLogger, WandbLogger
 from tqdm.auto import trange  # noqa
 
-from osrl.common.net import VAE, EnsembleQCritic, SquashedGaussianMLPActor
+from osrl.common.net import VAE, EnsembleQCritic, SquashedGaussianMLPActor, mlp
+
+
+class CategoricalMLPActor(nn.Module):
+    """A lightweight categorical actor for discrete action spaces."""
+
+    def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
+        super().__init__()
+        self.net = mlp([obs_dim] + list(hidden_sizes), activation, activation)
+        self.logits_layer = nn.Linear(hidden_sizes[-1], act_dim)
+
+    def forward(self,
+                obs,
+                deterministic=False,
+                with_logprob=True,
+                with_distribution=False):
+        logits = self.logits_layer(self.net(obs))
+        pi_distribution = torch.distributions.Categorical(logits=logits)
+        if deterministic:
+            action_ids = torch.argmax(logits, dim=-1)
+        else:
+            action_ids = pi_distribution.sample()
+        if with_logprob:
+            logp_pi = pi_distribution.log_prob(action_ids)
+        else:
+            logp_pi = None
+        if with_distribution:
+            return action_ids, logp_pi, pi_distribution
+        return action_ids, logp_pi
+
+    def action_probs(self, obs):
+        logits = self.logits_layer(self.net(obs))
+        return torch.softmax(logits, dim=-1)
 
 
 class CPQ(nn.Module):
@@ -51,7 +84,8 @@ class CPQ(nn.Module):
                  qc_scalar: float = 1.5,
                  cost_limit: int = 10,
                  episode_len: int = 300,
-                 device: str = "cpu"):
+                 device: str = "cpu",
+                 discrete_action: bool = False):
 
         super().__init__()
         self.a_hidden_sizes = a_hidden_sizes
@@ -68,6 +102,7 @@ class CPQ(nn.Module):
 
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.discrete_action = bool(discrete_action)
         self.latent_dim = self.action_dim * 2
         self.episode_len = episode_len
         self.max_action = max_action
@@ -75,9 +110,14 @@ class CPQ(nn.Module):
         self.device = device
 
         ################ create actor critic model ###############
-        self.actor = SquashedGaussianMLPActor(self.state_dim, self.action_dim,
-                                              self.a_hidden_sizes,
-                                              nn.ReLU).to(self.device)
+        if self.discrete_action:
+            self.actor = CategoricalMLPActor(self.state_dim, self.action_dim,
+                                             self.a_hidden_sizes,
+                                             nn.ReLU).to(self.device)
+        else:
+            self.actor = SquashedGaussianMLPActor(self.state_dim, self.action_dim,
+                                                  self.a_hidden_sizes,
+                                                  nn.ReLU).to(self.device)
         self.critic = EnsembleQCritic(self.state_dim,
                                       self.action_dim,
                                       self.c_hidden_sizes,
@@ -119,10 +159,43 @@ class CPQ(nn.Module):
         """
         Return action distribution and action log prob [optional].
         """
+        if self.discrete_action:
+            action_ids, logp = self.actor(obs, deterministic, with_logprob)
+            action_vec = F.one_hot(action_ids.long(),
+                                   num_classes=self.action_dim).to(obs.dtype)
+            return action_vec, logp
         a, logp = self.actor(obs, deterministic, with_logprob)
         return a * self.max_action, logp
 
+    def _to_action_ids(self, actions: torch.Tensor) -> torch.Tensor:
+        if actions.ndim == 1:
+            action_ids = actions
+        elif actions.ndim == 2 and actions.shape[1] == 1:
+            action_ids = actions[:, 0]
+        elif actions.ndim == 2 and actions.shape[1] == self.action_dim:
+            action_ids = torch.argmax(actions, dim=1)
+        else:
+            raise ValueError(
+                f"Unsupported discrete action shape {tuple(actions.shape)}. "
+                f"Expected [B], [B,1], or [B,{self.action_dim}].")
+        action_ids = action_ids.long()
+        if action_ids.numel() > 0:
+            min_id = int(action_ids.min().item())
+            max_id = int(action_ids.max().item())
+            if min_id < 0 or max_id >= self.action_dim:
+                raise ValueError(
+                    f"Discrete action ids out of range: min={min_id} max={max_id} "
+                    f"valid=[0,{self.action_dim - 1}]")
+        return action_ids
+
+    def _to_action_vector(self, actions: torch.Tensor) -> torch.Tensor:
+        if not self.discrete_action:
+            return actions
+        action_ids = self._to_action_ids(actions)
+        return F.one_hot(action_ids, num_classes=self.action_dim).to(torch.float32)
+
     def vae_loss(self, observations, actions):
+        actions = self._to_action_vector(actions)
         recon, mean, std = self.vae(observations, actions)
         recon_loss = nn.functional.mse_loss(recon, actions)
         KL_loss = -0.5 * (1 + torch.log(std.pow(2)) - mean.pow(2) - std.pow(2)).mean()
@@ -135,6 +208,7 @@ class CPQ(nn.Module):
         return loss_vae, stats_vae
 
     def critic_loss(self, observations, next_observations, actions, rewards, done):
+        actions = self._to_action_vector(actions)
         _, q_list = self.critic.predict(observations, actions)
         # Bellman backup for Q functions
         with torch.no_grad():
@@ -153,6 +227,7 @@ class CPQ(nn.Module):
         return loss_critic, stats_critic
 
     def cost_critic_loss(self, observations, next_observations, actions, costs, done):
+        actions = self._to_action_vector(actions)
         _, qc_list = self.cost_critic.predict(observations, actions)
         # Bellman backup for Q functions
         with torch.no_grad():
@@ -163,10 +238,19 @@ class CPQ(nn.Module):
             batch_size = observations.shape[0]
             _, _, pi_dist = self.actor(observations, False, True, True)
             # sample actions
-            sampled_actions = pi_dist.sample(
-                [self.sample_action_num])  # [sample_action_num, batch_size, act_dim]
-            sampled_actions = sampled_actions.reshape(
-                self.sample_action_num * batch_size, self.action_dim)
+            if self.discrete_action:
+                sampled_action_ids = pi_dist.sample([self.sample_action_num])
+                sampled_actions = F.one_hot(
+                    sampled_action_ids.long(), num_classes=self.action_dim).to(
+                        observations.dtype)
+                sampled_actions = sampled_actions.reshape(
+                    self.sample_action_num * batch_size, self.action_dim)
+            else:
+                sampled_actions = pi_dist.sample(
+                    [self.sample_action_num]
+                )  # [sample_action_num, batch_size, act_dim]
+                sampled_actions = sampled_actions.reshape(
+                    self.sample_action_num * batch_size, self.action_dim)
             stacked_obs = torch.tile(observations[None, :, :],
                                      (self.sample_action_num, 1,
                                       1))  # [sample_action_num, batch_size, obs_dim]
@@ -206,10 +290,30 @@ class CPQ(nn.Module):
         for p in self.cost_critic.parameters():
             p.requires_grad = False
 
-        actions, _ = self._actor_forward(observations, False, True)
-        q_pi, _ = self.critic.predict(observations, actions)
-        qc_pi, _ = self.cost_critic.predict(observations, actions)
-        loss_actor = -((qc_pi <= self.q_thres) * q_pi).mean()
+        if self.discrete_action:
+            with torch.no_grad():
+                batch_size = observations.shape[0]
+                action_grid = torch.eye(self.action_dim,
+                                        device=observations.device,
+                                        dtype=observations.dtype)
+                action_grid = action_grid.unsqueeze(0).repeat(batch_size, 1, 1)
+                action_grid = action_grid.reshape(batch_size * self.action_dim,
+                                                  self.action_dim)
+                obs_repeated = observations.unsqueeze(1).repeat(1, self.action_dim, 1)
+                obs_repeated = obs_repeated.reshape(batch_size * self.action_dim,
+                                                    self.state_dim)
+                q_all, _ = self.critic.predict(obs_repeated, action_grid)
+                qc_all, _ = self.cost_critic.predict(obs_repeated, action_grid)
+                q_all = q_all.reshape(batch_size, self.action_dim)
+                qc_all = qc_all.reshape(batch_size, self.action_dim)
+                safe_mask = (qc_all <= self.q_thres).to(dtype=q_all.dtype)
+            pi_probs = self.actor.action_probs(observations)
+            loss_actor = -((pi_probs * safe_mask * q_all).sum(dim=1)).mean()
+        else:
+            actions, _ = self._actor_forward(observations, False, True)
+            q_pi, _ = self.critic.predict(observations, actions)
+            qc_pi, _ = self.cost_critic.predict(observations, actions)
+            loss_actor = -((qc_pi <= self.q_thres) * q_pi).mean()
         self.actor_optim.zero_grad()
         loss_actor.backward()
         self.actor_optim.step()
@@ -245,6 +349,19 @@ class CPQ(nn.Module):
         Given a single obs, return the action, logp.
         """
         obs = torch.tensor(obs[None, ...], dtype=torch.float32).to(self.device)
+        if self.discrete_action:
+            action_ids, logp_a = self.actor(obs, deterministic, with_logprob)
+            a = action_ids.data.numpy(
+            ) if self.device == "cpu" else action_ids.data.cpu().numpy()
+            if logp_a is None:
+                logp_np = None
+            else:
+                logp_np = logp_a.data.numpy(
+                ) if self.device == "cpu" else logp_a.data.cpu().numpy()
+            action_out = int(np.squeeze(a, axis=0))
+            if logp_np is None:
+                return action_out, None
+            return action_out, float(np.squeeze(logp_np))
         a, logp_a = self._actor_forward(obs, deterministic, with_logprob)
         a = a.data.numpy() if self.device == "cpu" else a.data.cpu().numpy()
         logp_a = logp_a.data.numpy() if self.device == "cpu" else logp_a.data.cpu(
