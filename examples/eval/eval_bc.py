@@ -1,8 +1,6 @@
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List
 
-import dsrl
-import numpy as np
 import pyrallis
 import torch
 from pyrallis import field
@@ -53,11 +51,13 @@ def eval(args: EvalConfig):
     bc_model.load_state_dict(model["model_state"])
     bc_model.to(args.device)
 
-    trainer = BCTrainer(bc_model,
-                        env,
-                        bc_mode=cfg["bc_mode"],
-                        cost_limit=cfg["cost_limit"],
-                        device=args.device)
+    trainer = BCTrainer(
+        bc_model,
+        env,
+        bc_mode=cfg["bc_mode"],
+        cost_limit=cfg["cost_limit"],
+        device=args.device,
+    )
 
     if cfg["bc_mode"] == "multi-task":
         for target_cost in args.costs:

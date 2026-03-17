@@ -1,8 +1,6 @@
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List
 
-import dsrl
-import numpy as np
 import pyrallis
 import torch
 from dsrl.offline_env import OfflineEnvWrapper, wrap_env  # noqa
@@ -75,23 +73,27 @@ def eval(args: EvalConfig):
     cdt_model.load_state_dict(model["model_state"])
     cdt_model.to(args.device)
 
-    trainer = CDTTrainer(cdt_model,
-                         env,
-                         reward_scale=cfg["reward_scale"],
-                         cost_scale=cfg["cost_scale"],
-                         cost_reverse=cfg["cost_reverse"],
-                         device=args.device)
+    trainer = CDTTrainer(
+        cdt_model,
+        env,
+        reward_scale=cfg["reward_scale"],
+        cost_scale=cfg["cost_scale"],
+        cost_reverse=cfg["cost_reverse"],
+        device=args.device,
+    )
 
     rets = args.returns
     costs = args.costs
-    assert len(rets) == len(
-        costs
-    ), f"The length of returns {len(rets)} should be equal to costs {len(costs)}!"
+    assert len(rets) == len(costs), (
+        f"The length of returns {len(rets)} should be equal to costs {len(costs)}!"
+    )
     for target_ret, target_cost in zip(rets, costs):
         seed_all(cfg["seed"])
-        ret, cost, length = trainer.evaluate(args.eval_episodes,
-                                             target_ret * cfg["reward_scale"],
-                                             target_cost * cfg["cost_scale"])
+        ret, cost, length = trainer.evaluate(
+            args.eval_episodes,
+            target_ret * cfg["reward_scale"],
+            target_cost * cfg["cost_scale"],
+        )
         normalized_ret, normalized_cost = env.get_normalized_score(ret, cost)
         print(
             f"Target reward {target_ret}, real reward {ret}, normalized reward: {normalized_ret}; target cost {target_cost}, real cost {cost}, normalized cost: {normalized_cost}"

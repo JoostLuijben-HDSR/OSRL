@@ -1,11 +1,8 @@
 import os
-import uuid
 import types
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import asdict
 
 import bullet_safety_gym  # noqa
-import dsrl
 import gymnasium as gym  # noqa
 import numpy as np
 import pyrallis
@@ -64,16 +61,18 @@ def train(args: BCQLTrainConfig):
         rbins = density_cfg["rbins"]
         max_npb = density_cfg["max_npb"]
         min_npb = density_cfg["min_npb"]
-    data = env.pre_process_data(data,
-                                args.outliers_percent,
-                                args.noise_scale,
-                                args.inpaint_ranges,
-                                args.epsilon,
-                                args.density,
-                                cbins=cbins,
-                                rbins=rbins,
-                                max_npb=max_npb,
-                                min_npb=min_npb)
+    data = env.pre_process_data(
+        data,
+        args.outliers_percent,
+        args.noise_scale,
+        args.inpaint_ranges,
+        args.epsilon,
+        args.density,
+        cbins=cbins,
+        rbins=rbins,
+        max_npb=max_npb,
+        min_npb=min_npb,
+    )
 
     # wrapper
     env = wrap_env(
@@ -111,20 +110,22 @@ def train(args: BCQLTrainConfig):
     logger.setup_checkpoint_fn(checkpoint_fn)
 
     # trainer
-    trainer = BCQLTrainer(model,
-                          env,
-                          logger=logger,
-                          actor_lr=args.actor_lr,
-                          critic_lr=args.critic_lr,
-                          vae_lr=args.vae_lr,
-                          reward_scale=args.reward_scale,
-                          cost_scale=args.cost_scale,
-                          device=args.device)
+    trainer = BCQLTrainer(
+        model,
+        env,
+        logger=logger,
+        actor_lr=args.actor_lr,
+        critic_lr=args.critic_lr,
+        vae_lr=args.vae_lr,
+        reward_scale=args.reward_scale,
+        cost_scale=args.cost_scale,
+        device=args.device,
+    )
 
     # initialize pytorch dataloader
-    dataset = TransitionDataset(data,
-                                reward_scale=args.reward_scale,
-                                cost_scale=args.cost_scale)
+    dataset = TransitionDataset(
+        data, reward_scale=args.reward_scale, cost_scale=args.cost_scale
+    )
     trainloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -144,8 +145,9 @@ def train(args: BCQLTrainConfig):
         observations, next_observations, actions, rewards, costs, done = [
             b.to(args.device) for b in batch
         ]
-        trainer.train_one_step(observations, next_observations, actions, rewards, costs,
-                               done)
+        trainer.train_one_step(
+            observations, next_observations, actions, rewards, costs, done
+        )
 
         # evaluation
         if (step + 1) % args.eval_every == 0 or step == args.update_steps - 1:

@@ -1,11 +1,8 @@
 import os
-import uuid
 import types
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import asdict
 
 import bullet_safety_gym  # noqa
-import dsrl
 import gymnasium as gym  # noqa
 import numpy as np
 import pyrallis
@@ -63,16 +60,18 @@ def train(args: BCTrainConfig):
         rbins = density_cfg["rbins"]
         max_npb = density_cfg["max_npb"]
         min_npb = density_cfg["min_npb"]
-    data = env.pre_process_data(data,
-                                args.outliers_percent,
-                                args.noise_scale,
-                                args.inpaint_ranges,
-                                args.epsilon,
-                                args.density,
-                                cbins=cbins,
-                                rbins=rbins,
-                                max_npb=max_npb,
-                                min_npb=min_npb)
+    data = env.pre_process_data(
+        data,
+        args.outliers_percent,
+        args.noise_scale,
+        args.inpaint_ranges,
+        args.epsilon,
+        args.density,
+        cbins=cbins,
+        rbins=rbins,
+        max_npb=max_npb,
+        min_npb=min_npb,
+    )
 
     process_bc_dataset(data, args.cost_limit, args.gamma, args.bc_mode)
 
@@ -95,13 +94,15 @@ def train(args: BCTrainConfig):
 
     logger.setup_checkpoint_fn(checkpoint_fn)
 
-    trainer = BCTrainer(model,
-                        env,
-                        logger=logger,
-                        actor_lr=args.actor_lr,
-                        bc_mode=args.bc_mode,
-                        cost_limit=args.cost_limit,
-                        device=args.device)
+    trainer = BCTrainer(
+        model,
+        env,
+        logger=logger,
+        actor_lr=args.actor_lr,
+        bc_mode=args.bc_mode,
+        cost_limit=args.cost_limit,
+        device=args.device,
+    )
 
     trainloader = DataLoader(
         TransitionDataset(data),

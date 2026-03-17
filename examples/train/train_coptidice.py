@@ -1,11 +1,8 @@
 import os
-import uuid
 import types
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import asdict
 
 import bullet_safety_gym  # noqa
-import dsrl
 import gymnasium as gym  # noqa
 import numpy as np
 import pyrallis
@@ -16,8 +13,10 @@ from fsrl.utils import WandbLogger
 from torch.utils.data import DataLoader
 from tqdm.auto import trange  # noqa
 
-from examples.configs.coptidice_configs import (COptiDICE_DEFAULT_CONFIG,
-                                                COptiDICETrainConfig)
+from examples.configs.coptidice_configs import (
+    COptiDICE_DEFAULT_CONFIG,
+    COptiDICETrainConfig,
+)
 from osrl.algorithms import COptiDICE, COptiDICETrainer
 from osrl.common import TransitionDataset
 from osrl.common.exp_util import auto_name, seed_all
@@ -65,16 +64,18 @@ def train(args: COptiDICETrainConfig):
         rbins = density_cfg["rbins"]
         max_npb = density_cfg["max_npb"]
         min_npb = density_cfg["min_npb"]
-    data = env.pre_process_data(data,
-                                args.outliers_percent,
-                                args.noise_scale,
-                                args.inpaint_ranges,
-                                args.epsilon,
-                                args.density,
-                                cbins=cbins,
-                                rbins=rbins,
-                                max_npb=max_npb,
-                                min_npb=min_npb)
+    data = env.pre_process_data(
+        data,
+        args.outliers_percent,
+        args.noise_scale,
+        args.inpaint_ranges,
+        args.epsilon,
+        args.density,
+        cbins=cbins,
+        rbins=rbins,
+        max_npb=max_npb,
+        min_npb=min_npb,
+    )
 
     # wrapper
     env = wrap_env(
@@ -84,10 +85,12 @@ def train(args: COptiDICETrainConfig):
     env = OfflineEnvWrapper(env)
 
     # setup dataset
-    dataset = TransitionDataset(data,
-                                reward_scale=args.reward_scale,
-                                cost_scale=args.cost_scale,
-                                state_init=True)
+    dataset = TransitionDataset(
+        data,
+        reward_scale=args.reward_scale,
+        cost_scale=args.cost_scale,
+        state_init=True,
+    )
     trainloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -125,15 +128,17 @@ def train(args: COptiDICETrainConfig):
 
     logger.setup_checkpoint_fn(checkpoint_fn)
 
-    trainer = COptiDICETrainer(model,
-                               env,
-                               logger=logger,
-                               actor_lr=args.actor_lr,
-                               critic_lr=args.critic_lr,
-                               scalar_lr=args.scalar_lr,
-                               reward_scale=args.reward_scale,
-                               cost_scale=args.cost_scale,
-                               device=args.device)
+    trainer = COptiDICETrainer(
+        model,
+        env,
+        logger=logger,
+        actor_lr=args.actor_lr,
+        critic_lr=args.critic_lr,
+        scalar_lr=args.scalar_lr,
+        reward_scale=args.reward_scale,
+        cost_scale=args.cost_scale,
+        device=args.device,
+    )
 
     # for saving the best
     best_reward = -np.inf

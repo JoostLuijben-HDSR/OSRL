@@ -1,12 +1,10 @@
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List
 
-import dsrl
 import numpy as np
 import pyrallis
 import torch
 from dsrl.offline_env import OfflineEnvWrapper, wrap_env  # noqa
-from pyrallis import field
 
 from osrl.algorithms import COptiDICE, COptiDICETrainer
 from osrl.common.exp_util import load_config_and_model, seed_all
@@ -64,11 +62,13 @@ def eval(args: EvalConfig):
     )
     coptidice_model.load_state_dict(model["model_state"])
     coptidice_model.to(args.device)
-    trainer = COptiDICETrainer(coptidice_model,
-                               env,
-                               reward_scale=cfg["reward_scale"],
-                               cost_scale=cfg["cost_scale"],
-                               device=args.device)
+    trainer = COptiDICETrainer(
+        coptidice_model,
+        env,
+        reward_scale=cfg["reward_scale"],
+        cost_scale=cfg["cost_scale"],
+        device=args.device,
+    )
 
     ret, cost, length = trainer.evaluate(args.eval_episodes)
     normalized_ret, normalized_cost = env.get_normalized_score(ret, cost)

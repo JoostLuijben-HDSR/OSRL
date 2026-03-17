@@ -1,7 +1,6 @@
 from easy_runner import EasyRunner
 
 if __name__ == "__main__":
-
     exp_name = "benchmark"
     runner = EasyRunner(log_name=exp_name)
 

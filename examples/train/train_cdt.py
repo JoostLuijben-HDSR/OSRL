@@ -1,11 +1,8 @@
 import os
-import uuid
 import types
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import asdict
 
 import bullet_safety_gym  # noqa
-import dsrl
 import gymnasium as gym  # noqa
 import numpy as np
 import pyrallis
@@ -64,16 +61,18 @@ def train(args: CDTTrainConfig):
         rbins = density_cfg["rbins"]
         max_npb = density_cfg["max_npb"]
         min_npb = density_cfg["min_npb"]
-    data = env.pre_process_data(data,
-                                args.outliers_percent,
-                                args.noise_scale,
-                                args.inpaint_ranges,
-                                args.epsilon,
-                                args.density,
-                                cbins=cbins,
-                                rbins=rbins,
-                                max_npb=max_npb,
-                                min_npb=min_npb)
+    data = env.pre_process_data(
+        data,
+        args.outliers_percent,
+        args.noise_scale,
+        args.inpaint_ranges,
+        args.epsilon,
+        args.density,
+        cbins=cbins,
+        rbins=rbins,
+        max_npb=max_npb,
+        min_npb=min_npb,
+    )
 
     # wrapper
     env = wrap_env(
@@ -116,21 +115,23 @@ def train(args: CDTTrainConfig):
     logger.setup_checkpoint_fn(checkpoint_fn)
 
     # trainer
-    trainer = CDTTrainer(model,
-                         env,
-                         logger=logger,
-                         learning_rate=args.learning_rate,
-                         weight_decay=args.weight_decay,
-                         betas=args.betas,
-                         clip_grad=args.clip_grad,
-                         lr_warmup_steps=args.lr_warmup_steps,
-                         reward_scale=args.reward_scale,
-                         cost_scale=args.cost_scale,
-                         loss_cost_weight=args.loss_cost_weight,
-                         loss_state_weight=args.loss_state_weight,
-                         cost_reverse=args.cost_reverse,
-                         no_entropy=args.no_entropy,
-                         device=args.device)
+    trainer = CDTTrainer(
+        model,
+        env,
+        logger=logger,
+        learning_rate=args.learning_rate,
+        weight_decay=args.weight_decay,
+        betas=args.betas,
+        clip_grad=args.clip_grad,
+        lr_warmup_steps=args.lr_warmup_steps,
+        reward_scale=args.reward_scale,
+        cost_scale=args.cost_scale,
+        loss_cost_weight=args.loss_cost_weight,
+        loss_state_weight=args.loss_state_weight,
+        cost_reverse=args.cost_reverse,
+        no_entropy=args.no_entropy,
+        device=args.device,
+    )
 
     ct = lambda x: 70 - x if args.linear else 1 / (x + 10)
 
@@ -180,11 +181,26 @@ def train(args: CDTTrainConfig):
 
     for step in trange(args.update_steps, desc="Training"):
         batch = next(trainloader_iter)
-        states, actions, returns, costs_return, time_steps, mask, episode_cost, costs = [
-            b.to(args.device) for b in batch
-        ]
-        trainer.train_one_step(states, actions, returns, costs_return, time_steps, mask,
-                               episode_cost, costs)
+        (
+            states,
+            actions,
+            returns,
+            costs_return,
+            time_steps,
+            mask,
+            episode_cost,
+            costs,
+        ) = [b.to(args.device) for b in batch]
+        trainer.train_one_step(
+            states,
+            actions,
+            returns,
+            costs_return,
+            time_steps,
+            mask,
+            episode_cost,
+            costs,
+        )
 
         # evaluation
         if (step + 1) % args.eval_every == 0 or step == args.update_steps - 1:
@@ -195,12 +211,16 @@ def train(args: CDTTrainConfig):
                 if args.cost_reverse:
                     # critical step, rescale the return!
                     ret, cost, length = trainer.evaluate(
-                        args.eval_episodes, reward_return * args.reward_scale,
-                        (args.episode_len - cost_return) * args.cost_scale)
+                        args.eval_episodes,
+                        reward_return * args.reward_scale,
+                        (args.episode_len - cost_return) * args.cost_scale,
+                    )
                 else:
                     ret, cost, length = trainer.evaluate(
-                        args.eval_episodes, reward_return * args.reward_scale,
-                        cost_return * args.cost_scale)
+                        args.eval_episodes,
+                        reward_return * args.reward_scale,
+                        cost_return * args.cost_scale,
+                    )
                 average_cost.append(cost)
                 average_reward.append(ret)
 
@@ -218,8 +238,9 @@ def train(args: CDTTrainConfig):
             # save the best weight
             mean_ret = np.mean(average_reward)
             mean_cost = np.mean(average_cost)
-            if mean_cost < best_cost or (mean_cost == best_cost
-                                         and mean_ret > best_reward):
+            if mean_cost < best_cost or (
+                mean_cost == best_cost and mean_ret > best_reward
+            ):
                 best_cost = mean_cost
                 best_reward = mean_ret
                 best_idx = step
