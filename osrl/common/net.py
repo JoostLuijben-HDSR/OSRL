@@ -43,13 +43,9 @@ class MLPGaussianPerturbationActor(nn.Module):
         act_limit (float): The absolute value of the limits of the action space.
     """
 
-    def __init__(self,
-                 obs_dim,
-                 act_dim,
-                 hidden_sizes,
-                 activation,
-                 phi=0.05,
-                 act_limit=1):
+    def __init__(
+        self, obs_dim, act_dim, hidden_sizes, activation, phi=0.05, act_limit=1
+    ):
         super().__init__()
         pi_sizes = [obs_dim + act_dim] + list(hidden_sizes) + [act_dim]
         self.pi = mlp(pi_sizes, activation, nn.Tanh)
@@ -65,7 +61,7 @@ class MLPGaussianPerturbationActor(nn.Module):
 class MLPActor(nn.Module):
     """
     A MLP actor
-    
+
     Args:
         obs_dim (int): The dimension of the observation space.
         act_dim (int): The dimension of the action space.
@@ -88,7 +84,7 @@ class MLPActor(nn.Module):
 class MLPGaussianActor(nn.Module):
     """
     A MLP Gaussian actor
-    
+
     Args:
         obs_dim (int): The dimension of the observation space.
         act_dim (int): The dimension of the action space.
@@ -99,22 +95,24 @@ class MLPGaussianActor(nn.Module):
         device (str): The device to use for computation (cpu or cuda).
     """
 
-    def __init__(self,
-                 obs_dim,
-                 act_dim,
-                 action_low,
-                 action_high,
-                 hidden_sizes,
-                 activation,
-                 device="cpu"):
+    def __init__(
+        self,
+        obs_dim,
+        act_dim,
+        action_low,
+        action_high,
+        hidden_sizes,
+        activation,
+        device="cpu",
+    ):
         super().__init__()
         self.device = device
-        self.action_low = torch.nn.Parameter(torch.tensor(action_low,
-                                                          device=device)[None, ...],
-                                             requires_grad=False)  # (1, act_dim)
-        self.action_high = torch.nn.Parameter(torch.tensor(action_high,
-                                                           device=device)[None, ...],
-                                              requires_grad=False)  # (1, act_dim)
+        self.action_low = torch.nn.Parameter(
+            torch.tensor(action_low, device=device)[None, ...], requires_grad=False
+        )  # (1, act_dim)
+        self.action_high = torch.nn.Parameter(
+            torch.tensor(action_high, device=device)[None, ...], requires_grad=False
+        )  # (1, act_dim)
         log_std = -0.5 * np.ones(act_dim, dtype=np.float32)
         self.log_std = torch.nn.Parameter(torch.as_tensor(log_std))
         self.mu_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
@@ -127,15 +125,16 @@ class MLPGaussianActor(nn.Module):
 
     def _log_prob_from_distribution(self, pi, act):
         return pi.log_prob(act).sum(
-            axis=-1)  # Last axis sum needed for Torch Normal distribution
+            axis=-1
+        )  # Last axis sum needed for Torch Normal distribution
 
     def forward(self, obs, act=None, deterministic=False):
-        '''
+        """
         Produce action distributions for given observations, and
         optionally compute the log likelihood of given actions under
         those distributions.
         If act is None, sample an action
-        '''
+        """
         mu, pi = self._distribution(obs)
         if act is None:
             act = pi.sample()
@@ -150,15 +149,15 @@ LOG_STD_MIN = -20
 
 
 class SquashedGaussianMLPActor(nn.Module):
-    '''
+    """
     A MLP Gaussian actor, can also be used as a deterministic actor
-    
+
     Args:
         obs_dim (int): The dimension of the observation space.
         act_dim (int): The dimension of the action space.
         hidden_sizes (List[int]): The sizes of the hidden layers in the neural network.
         activation (Type[nn.Module]): The activation function to use between layers.
-    '''
+    """
 
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
         super().__init__()
@@ -166,12 +165,14 @@ class SquashedGaussianMLPActor(nn.Module):
         self.mu_layer = nn.Linear(hidden_sizes[-1], act_dim)
         self.log_std_layer = nn.Linear(hidden_sizes[-1], act_dim)
 
-    def forward(self,
-                obs,
-                deterministic=False,
-                with_logprob=True,
-                with_distribution=False,
-                return_pretanh_value=False):
+    def forward(
+        self,
+        obs,
+        deterministic=False,
+        with_logprob=True,
+        with_distribution=False,
+        return_pretanh_value=False,
+    ):
         net_out = self.net(obs)
         mu = self.mu_layer(net_out)
         log_std = self.log_std_layer(net_out)
@@ -189,8 +190,9 @@ class SquashedGaussianMLPActor(nn.Module):
         if with_logprob:
             # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
             logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2 *
-                        (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(axis=1)
+            logp_pi -= (2 * (np.log(2) - pi_action - F.softplus(-2 * pi_action))).sum(
+                axis=1
+            )
         else:
             logp_pi = None
 
@@ -206,24 +208,26 @@ class SquashedGaussianMLPActor(nn.Module):
 
 
 class EnsembleQCritic(nn.Module):
-    '''
+    """
     An ensemble of Q network to address the overestimation issue.
-    
+
     Args:
         obs_dim (int): The dimension of the observation space.
         act_dim (int): The dimension of the action space.
         hidden_sizes (List[int]): The sizes of the hidden layers in the neural network.
         activation (Type[nn.Module]): The activation function to use between layers.
         num_q (float): The number of Q networks to include in the ensemble.
-    '''
+    """
 
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation, num_q=2):
         super().__init__()
         assert num_q >= 1, "num_q param should be greater than 1"
-        self.q_nets = nn.ModuleList([
-            mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], nn.ReLU)
-            for i in range(num_q)
-        ])
+        self.q_nets = nn.ModuleList(
+            [
+                mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], nn.ReLU)
+                for i in range(num_q)
+            ]
+        )
 
     def forward(self, obs, act=None):
         # Squeeze is critical to ensure value has the right shape.
@@ -238,33 +242,37 @@ class EnsembleQCritic(nn.Module):
         return torch.min(qs, dim=0).values, q_list
 
     def loss(self, target, q_list=None):
-        losses = [((q - target)**2).mean() for q in q_list]
+        losses = [((q - target) ** 2).mean() for q in q_list]
         return sum(losses)
 
 
 class EnsembleDoubleQCritic(nn.Module):
-    '''
+    """
     An ensemble of double Q network to address the overestimation issue.
-    
+
     Args:
         obs_dim (int): The dimension of the observation space.
         act_dim (int): The dimension of the action space.
         hidden_sizes (List[int]): The sizes of the hidden layers in the neural network.
         activation (Type[nn.Module]): The activation function to use between layers.
         num_q (float): The number of Q networks to include in the ensemble.
-    '''
+    """
 
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation, num_q=2):
         super().__init__()
         assert num_q >= 1, "num_q param should be greater than 1"
-        self.q1_nets = nn.ModuleList([
-            mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], nn.ReLU)
-            for i in range(num_q)
-        ])
-        self.q2_nets = nn.ModuleList([
-            mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], nn.ReLU)
-            for i in range(num_q)
-        ])
+        self.q1_nets = nn.ModuleList(
+            [
+                mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], nn.ReLU)
+                for i in range(num_q)
+            ]
+        )
+        self.q2_nets = nn.ModuleList(
+            [
+                mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], nn.ReLU)
+                for i in range(num_q)
+            ]
+        )
 
     def forward(self, obs, act):
         # Squeeze is critical to ensure value has the right shape.
@@ -283,14 +291,14 @@ class EnsembleDoubleQCritic(nn.Module):
         return qs1_min, qs2_min, q1_list, q2_list
 
     def loss(self, target, q_list=None):
-        losses = [((q - target)**2).mean() for q in q_list]
+        losses = [((q - target) ** 2).mean() for q in q_list]
         return sum(losses)
 
 
 class VAE(nn.Module):
     """
     Variational Auto-Encoder
-    
+
     Args:
         obs_dim (int): The dimension of the observation space.
         act_dim (int): The dimension of the action space.
@@ -300,7 +308,9 @@ class VAE(nn.Module):
         device (str): The device to use for computation (cpu or cuda).
     """
 
-    def __init__(self, obs_dim, act_dim, hidden_size, latent_dim, act_lim, device="cpu"):
+    def __init__(
+        self, obs_dim, act_dim, hidden_size, latent_dim, act_lim, device="cpu"
+    ):
         super(VAE, self).__init__()
         self.e1 = nn.Linear(obs_dim + act_dim, hidden_size)
         self.e2 = nn.Linear(hidden_size, hidden_size)
@@ -331,8 +341,11 @@ class VAE(nn.Module):
 
     def decode(self, obs, z=None):
         if z is None:
-            z = torch.randn((obs.shape[0], self.latent_dim)).clamp(-0.5,
-                                                                   0.5).to(self.device)
+            z = (
+                torch.randn((obs.shape[0], self.latent_dim))
+                .clamp(-0.5, 0.5)
+                .to(self.device)
+            )
 
         a = F.relu(self.d1(torch.cat([obs, z], 1)))
         a = F.relu(self.d2(a))
@@ -341,28 +354,33 @@ class VAE(nn.Module):
     # for BEARL only
     def decode_multiple(self, obs, z=None, num_decode=10):
         if z is None:
-            z = torch.randn(
-                (obs.shape[0], num_decode, self.latent_dim)).clamp(-0.5,
-                                                                   0.5).to(self.device)
+            z = (
+                torch.randn((obs.shape[0], num_decode, self.latent_dim))
+                .clamp(-0.5, 0.5)
+                .to(self.device)
+            )
 
         a = F.relu(
             self.d1(
                 torch.cat(
-                    [obs.unsqueeze(0).repeat(num_decode, 1, 1).permute(1, 0, 2), z], 2)))
+                    [obs.unsqueeze(0).repeat(num_decode, 1, 1).permute(1, 0, 2), z], 2
+                )
+            )
+        )
         a = F.relu(self.d2(a))
         return torch.tanh(self.d3(a)), self.d3(a)
 
 
 class LagrangianPIDController:
-    '''
+    """
     Lagrangian multiplier controller
-    
+
     Args:
         KP (float): The proportional gain.
         KI (float): The integral gain.
         KD (float): The derivative gain.
         thres (float): The setpoint for the controller.
-    '''
+    """
 
     def __init__(self, KP, KI, KD, thres) -> None:
         super().__init__()
@@ -374,22 +392,24 @@ class LagrangianPIDController:
         self.error_integral = 0
 
     def control(self, qc):
-        '''
+        """
         @param qc [batch,]
-        '''
+        """
         error_new = torch.mean(qc - self.thres)  # [batch]
         error_diff = F.relu(error_new - self.error_old)
         self.error_integral = torch.mean(F.relu(self.error_integral + error_new))
         self.error_old = error_new
 
-        multiplier = F.relu(self.KP * F.relu(error_new) + self.KI * self.error_integral +
-                            self.KD * error_diff)
+        multiplier = F.relu(
+            self.KP * F.relu(error_new)
+            + self.KI * self.error_integral
+            + self.KD * error_diff
+        )
         return torch.mean(multiplier)
 
 
 # Decision Transformer implementation
 class TransformerBlock(nn.Module):
-
     def __init__(
         self,
         seq_len: int,
@@ -403,10 +423,9 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(embedding_dim)
         self.drop = nn.Dropout(residual_dropout)
 
-        self.attention = nn.MultiheadAttention(embedding_dim,
-                                               num_heads,
-                                               attention_dropout,
-                                               batch_first=True)
+        self.attention = nn.MultiheadAttention(
+            embedding_dim, num_heads, attention_dropout, batch_first=True
+        )
         self.mlp = nn.Sequential(
             nn.Linear(embedding_dim, 4 * embedding_dim),
             nn.GELU(),
@@ -414,15 +433,16 @@ class TransformerBlock(nn.Module):
             nn.Dropout(residual_dropout),
         )
         # True value indicates that the corresponding position is not allowed to attend
-        self.register_buffer("causal_mask",
-                             ~torch.tril(torch.ones(seq_len, seq_len)).to(bool))
+        self.register_buffer(
+            "causal_mask", ~torch.tril(torch.ones(seq_len, seq_len)).to(bool)
+        )
         self.seq_len = seq_len
 
     # [batch_size, seq_len, emb_dim] -> [batch_size, seq_len, emb_dim]
-    def forward(self,
-                x: torch.Tensor,
-                padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        causal_mask = self.causal_mask[:x.shape[1], :x.shape[1]]
+    def forward(
+        self, x: torch.Tensor, padding_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        causal_mask = self.causal_mask[: x.shape[1], : x.shape[1]]
 
         norm_x = self.norm1(x)
         attention_out = self.attention(
@@ -496,7 +516,7 @@ class SquashedNormal(pyd.transformed_distribution.TransformedDistribution):
 
     def entropy(self, N=1):
         # sample from the distribution and then compute the empirical entropy:
-        x = self.rsample((N, ))
+        x = self.rsample((N,))
         log_p = self.log_prob(x)
 
         return -log_p.mean(axis=0).sum(axis=2)

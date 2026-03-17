@@ -11,7 +11,7 @@ import yaml
 
 def seed_all(seed=1029, others: Optional[list] = None):
     random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     # torch.use_deterministic_algorithms(True)
     torch.manual_seed(seed)
@@ -49,7 +49,7 @@ def get_cfg_value(config, key):
 
 
 def load_config_and_model(path: str, best: bool = False):
-    '''
+    """
     Load the configuration and trained model from a specified directory.
 
     :param path: the directory path where the configuration and trained model are stored.
@@ -57,7 +57,7 @@ def load_config_and_model(path: str, best: bool = False):
 
     :return: a tuple containing the configuration dictionary and the trained model.
     :raises ValueError: if the specified directory does not exist.
-    '''
+    """
     if osp.exists(path):
         config_file = osp.join(path, "config.yaml")
         print(f"load config from {config_file}")
@@ -75,11 +75,11 @@ def load_config_and_model(path: str, best: bool = False):
 
 
 def to_string(values):
-    '''
+    """
     Recursively convert a sequence or dictionary of values to a string representation.
     :param values: the sequence or dictionary of values to be converted to a string.
     :return: a string representation of the input values.
-    '''
+    """
     name = ""
     if isinstance(values, Sequence) and not isinstance(values, str):
         for i, v in enumerate(values):
@@ -96,9 +96,24 @@ def to_string(values):
 
 
 DEFAULT_SKIP_KEY = [
-    "task", "reward_threshold", "logdir", "worker", "project", "group", "name", "prefix",
-    "suffix", "save_interval", "render", "verbose", "save_ckpt", "training_num",
-    "testing_num", "epoch", "device", "thread"
+    "task",
+    "reward_threshold",
+    "logdir",
+    "worker",
+    "project",
+    "group",
+    "name",
+    "prefix",
+    "suffix",
+    "save_interval",
+    "render",
+    "verbose",
+    "save_ckpt",
+    "training_num",
+    "testing_num",
+    "epoch",
+    "device",
+    "thread",
 ]
 
 DEFAULT_KEY_ABBRE = {
@@ -110,17 +125,19 @@ DEFAULT_KEY_ABBRE = {
     "mstep_kl_std": "kl_std",
     "mstep_dual_lr": "mlr",
     "estep_dual_lr": "elr",
-    "update_per_step": "update"
+    "update_per_step": "update",
 }
 
 
-def auto_name(default_cfg: dict,
-              current_cfg: dict,
-              prefix: str = "",
-              suffix: str = "",
-              skip_keys: list = DEFAULT_SKIP_KEY,
-              key_abbre: dict = DEFAULT_KEY_ABBRE) -> str:
-    '''
+def auto_name(
+    default_cfg: dict,
+    current_cfg: dict,
+    prefix: str = "",
+    suffix: str = "",
+    skip_keys: list = DEFAULT_SKIP_KEY,
+    key_abbre: dict = DEFAULT_KEY_ABBRE,
+) -> str:
+    """
     Automatic generate the experiment name by comparing the current config with the default one.
 
     :param dict default_cfg: a dictionary containing the default configuration values.
@@ -131,7 +148,7 @@ def auto_name(default_cfg: dict,
     :param dict key_abbre: (optional) a dictionary containing abbreviations for keys in the generated name.
 
     :return str: a string representing the generated experiment name.
-    '''
+    """
     name = prefix
     for i, k in enumerate(sorted(default_cfg.keys())):
         if default_cfg[k] == current_cfg[k] or k in skip_keys:

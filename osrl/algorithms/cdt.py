@@ -591,4 +591,3 @@ class CDTTrainer:
                     break
             episode_rets.append(episode_ret)
         return np.mean(episode_rets)
-

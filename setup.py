@@ -60,8 +60,7 @@ def get_extras_require() -> str:
 setup(
     name="osrl-lib",
     version=get_version(),
-    description=
-    "Elegant Implementations of Offline Safe Reinforcement Learning Algorithms",
+    description="Elegant Implementations of Offline Safe Reinforcement Learning Algorithms",
     long_description=open("README.md", encoding="utf8").read(),
     long_description_content_type="text/markdown",
     url="https://github.com/liuzuxin/offline-safe-rl-baselines.git",
@@ -89,7 +88,8 @@ setup(
     ],
     keywords="offline safe reinforcement learning algorithms pytorch",
     packages=find_packages(
-        exclude=["test", "test.*", "examples", "examples.*", "docs", "docs.*"]),
+        exclude=["test", "test.*", "examples", "examples.*", "docs", "docs.*"]
+    ),
     install_requires=get_install_requires(),
     extras_require=get_extras_require(),
 )

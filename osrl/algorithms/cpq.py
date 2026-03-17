@@ -19,11 +19,9 @@ class CategoricalMLPActor(nn.Module):
         self.net = mlp([obs_dim] + list(hidden_sizes), activation, activation)
         self.logits_layer = nn.Linear(hidden_sizes[-1], act_dim)
 
-    def forward(self,
-                obs,
-                deterministic=False,
-                with_logprob=True,
-                with_distribution=False):
+    def forward(
+        self, obs, deterministic=False, with_logprob=True, with_distribution=False
+    ):
         logits = self.logits_layer(self.net(obs))
         pi_distribution = torch.distributions.Categorical(logits=logits)
         if deterministic:
@@ -51,41 +49,43 @@ class CPQ(nn.Module):
         state_dim (int): dimension of the state space.
         action_dim (int): dimension of the action space.
         max_action (float): Maximum action value.
-        a_hidden_sizes (list): List of integers specifying the sizes 
+        a_hidden_sizes (list): List of integers specifying the sizes
                                of the layers in the actor network.
-        c_hidden_sizes (list): List of integers specifying the sizes 
+        c_hidden_sizes (list): List of integers specifying the sizes
                                of the layers in the critic network.
-        vae_hidden_sizes (int): Number of hidden units in the VAE. 
-        sample_action_num (int): Number of action samples to draw. 
+        vae_hidden_sizes (int): Number of hidden units in the VAE.
+        sample_action_num (int): Number of action samples to draw.
         gamma (float): Discount factor for the reward.
-        tau (float): Soft update coefficient for the target networks. 
+        tau (float): Soft update coefficient for the target networks.
         beta (float): Weight of the KL divergence term.
         num_q (int): Number of Q networks in the ensemble.
         num_qc (int): Number of cost Q networks in the ensemble.
         qc_scalar (float): Scaling factor for the cost critic threshold.
         cost_limit (int): Upper limit on the cost per episode.
         episode_len (int): Maximum length of an episode.
-        device (str): Device to run the model on (e.g. 'cpu' or 'cuda:0'). 
+        device (str): Device to run the model on (e.g. 'cpu' or 'cuda:0').
     """
 
-    def __init__(self,
-                 state_dim: int,
-                 action_dim: int,
-                 max_action: float,
-                 a_hidden_sizes: list = [128, 128],
-                 c_hidden_sizes: list = [128, 128],
-                 vae_hidden_sizes: int = 64,
-                 sample_action_num: int = 10,
-                 gamma: float = 0.99,
-                 tau: float = 0.005,
-                 beta: float = 1.5,
-                 num_q: int = 1,
-                 num_qc: int = 1,
-                 qc_scalar: float = 1.5,
-                 cost_limit: int = 10,
-                 episode_len: int = 300,
-                 device: str = "cpu",
-                 discrete_action: bool = False):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        max_action: float,
+        a_hidden_sizes: list = [128, 128],
+        c_hidden_sizes: list = [128, 128],
+        vae_hidden_sizes: int = 64,
+        sample_action_num: int = 10,
+        gamma: float = 0.99,
+        tau: float = 0.005,
+        beta: float = 1.5,
+        num_q: int = 1,
+        num_qc: int = 1,
+        qc_scalar: float = 1.5,
+        cost_limit: int = 10,
+        episode_len: int = 300,
+        device: str = "cpu",
+        discrete_action: bool = False,
+    ):
 
         super().__init__()
         self.a_hidden_sizes = a_hidden_sizes
@@ -111,25 +111,35 @@ class CPQ(nn.Module):
 
         ################ create actor critic model ###############
         if self.discrete_action:
-            self.actor = CategoricalMLPActor(self.state_dim, self.action_dim,
-                                             self.a_hidden_sizes,
-                                             nn.ReLU).to(self.device)
+            self.actor = CategoricalMLPActor(
+                self.state_dim, self.action_dim, self.a_hidden_sizes, nn.ReLU
+            ).to(self.device)
         else:
-            self.actor = SquashedGaussianMLPActor(self.state_dim, self.action_dim,
-                                                  self.a_hidden_sizes,
-                                                  nn.ReLU).to(self.device)
-        self.critic = EnsembleQCritic(self.state_dim,
-                                      self.action_dim,
-                                      self.c_hidden_sizes,
-                                      nn.ReLU,
-                                      num_q=self.num_q).to(self.device)
-        self.vae = VAE(self.state_dim, self.action_dim, self.vae_hidden_sizes,
-                       self.latent_dim, self.max_action, self.device).to(self.device)
-        self.cost_critic = EnsembleQCritic(self.state_dim,
-                                           self.action_dim,
-                                           self.c_hidden_sizes,
-                                           nn.ReLU,
-                                           num_q=self.num_qc).to(self.device)
+            self.actor = SquashedGaussianMLPActor(
+                self.state_dim, self.action_dim, self.a_hidden_sizes, nn.ReLU
+            ).to(self.device)
+        self.critic = EnsembleQCritic(
+            self.state_dim,
+            self.action_dim,
+            self.c_hidden_sizes,
+            nn.ReLU,
+            num_q=self.num_q,
+        ).to(self.device)
+        self.vae = VAE(
+            self.state_dim,
+            self.action_dim,
+            self.vae_hidden_sizes,
+            self.latent_dim,
+            self.max_action,
+            self.device,
+        ).to(self.device)
+        self.cost_critic = EnsembleQCritic(
+            self.state_dim,
+            self.action_dim,
+            self.c_hidden_sizes,
+            nn.ReLU,
+            num_q=self.num_qc,
+        ).to(self.device)
         self.log_alpha = torch.tensor(0.0, device=self.device)
 
         self.actor_old = deepcopy(self.actor)
@@ -140,29 +150,33 @@ class CPQ(nn.Module):
         self.cost_critic_old.eval()
 
         # set critic and cost critic threshold
-        self.q_thres = cost_limit * (1 - self.gamma**self.episode_len) / (
-            1 - self.gamma) / self.episode_len
+        self.q_thres = (
+            cost_limit
+            * (1 - self.gamma**self.episode_len)
+            / (1 - self.gamma)
+            / self.episode_len
+        )
         self.qc_thres = qc_scalar * self.q_thres
 
     def _soft_update(self, tgt: nn.Module, src: nn.Module, tau: float) -> None:
         """
-        Softly update the parameters of target module 
+        Softly update the parameters of target module
         towards the parameters of source module.
         """
         for tgt_param, src_param in zip(tgt.parameters(), src.parameters()):
             tgt_param.data.copy_(tau * src_param.data + (1 - tau) * tgt_param.data)
 
-    def _actor_forward(self,
-                       obs: torch.tensor,
-                       deterministic: bool = False,
-                       with_logprob: bool = True):
+    def _actor_forward(
+        self, obs: torch.tensor, deterministic: bool = False, with_logprob: bool = True
+    ):
         """
         Return action distribution and action log prob [optional].
         """
         if self.discrete_action:
             action_ids, logp = self.actor(obs, deterministic, with_logprob)
-            action_vec = F.one_hot(action_ids.long(),
-                                   num_classes=self.action_dim).to(obs.dtype)
+            action_vec = F.one_hot(action_ids.long(), num_classes=self.action_dim).to(
+                obs.dtype
+            )
             return action_vec, logp
         a, logp = self.actor(obs, deterministic, with_logprob)
         return a * self.max_action, logp
@@ -177,7 +191,8 @@ class CPQ(nn.Module):
         else:
             raise ValueError(
                 f"Unsupported discrete action shape {tuple(actions.shape)}. "
-                f"Expected [B], [B,1], or [B,{self.action_dim}].")
+                f"Expected [B], [B,1], or [B,{self.action_dim}]."
+            )
         action_ids = action_ids.long()
         if action_ids.numel() > 0:
             min_id = int(action_ids.min().item())
@@ -185,7 +200,8 @@ class CPQ(nn.Module):
             if min_id < 0 or max_id >= self.action_dim:
                 raise ValueError(
                     f"Discrete action ids out of range: min={min_id} max={max_id} "
-                    f"valid=[0,{self.action_dim - 1}]")
+                    f"valid=[0,{self.action_dim - 1}]"
+                )
         return action_ids
 
     def _to_action_vector(self, actions: torch.Tensor) -> torch.Tensor:
@@ -216,8 +232,9 @@ class CPQ(nn.Module):
             q_targ, _ = self.critic_old.predict(next_observations, next_actions)
             qc_targ, _ = self.cost_critic_old.predict(next_observations, next_actions)
             # Constraints Penalized Bellman operator
-            backup = rewards + self.gamma * (1 -
-                                             done) * (qc_targ <= self.q_thres) * q_targ
+            backup = (
+                rewards + self.gamma * (1 - done) * (qc_targ <= self.q_thres) * q_targ
+            )
         # MSE loss against Bellman backup
         loss_critic = self.critic.loss(backup, q_list)
         self.critic_optim.zero_grad()
@@ -241,46 +258,54 @@ class CPQ(nn.Module):
             if self.discrete_action:
                 sampled_action_ids = pi_dist.sample([self.sample_action_num])
                 sampled_actions = F.one_hot(
-                    sampled_action_ids.long(), num_classes=self.action_dim).to(
-                        observations.dtype)
+                    sampled_action_ids.long(), num_classes=self.action_dim
+                ).to(observations.dtype)
                 sampled_actions = sampled_actions.reshape(
-                    self.sample_action_num * batch_size, self.action_dim)
+                    self.sample_action_num * batch_size, self.action_dim
+                )
             else:
                 sampled_actions = pi_dist.sample(
                     [self.sample_action_num]
                 )  # [sample_action_num, batch_size, act_dim]
                 sampled_actions = sampled_actions.reshape(
-                    self.sample_action_num * batch_size, self.action_dim)
-            stacked_obs = torch.tile(observations[None, :, :],
-                                     (self.sample_action_num, 1,
-                                      1))  # [sample_action_num, batch_size, obs_dim]
-            stacked_obs = stacked_obs.reshape(self.sample_action_num * batch_size,
-                                              self.state_dim)
+                    self.sample_action_num * batch_size, self.action_dim
+                )
+            stacked_obs = torch.tile(
+                observations[None, :, :], (self.sample_action_num, 1, 1)
+            )  # [sample_action_num, batch_size, obs_dim]
+            stacked_obs = stacked_obs.reshape(
+                self.sample_action_num * batch_size, self.state_dim
+            )
             qc_sampled, _ = self.cost_critic_old.predict(stacked_obs, sampled_actions)
             qc_sampled = qc_sampled.reshape(self.sample_action_num, batch_size)
             # get latent mean and std
             _, mean, std = self.vae(stacked_obs, sampled_actions)
             mean = mean.reshape(self.sample_action_num, batch_size, self.latent_dim)
             std = std.reshape(self.sample_action_num, batch_size, self.latent_dim)
-            KL_loss = -0.5 * (1 + torch.log(std.pow(2)) - mean.pow(2) - std.pow(2)).mean(
-                2)  # [sample_action_num, batch_size]
+            KL_loss = -0.5 * (
+                1 + torch.log(std.pow(2)) - mean.pow(2) - std.pow(2)
+            ).mean(2)  # [sample_action_num, batch_size]
             quantile = torch.quantile(KL_loss, 0.75)
             qc_ood = ((KL_loss >= quantile) * qc_sampled).mean(0)
 
         loss_cost_critic = self.cost_critic.loss(
-            backup, qc_list) - self.log_alpha.exp() * (qc_ood.mean() - self.qc_thres)
+            backup, qc_list
+        ) - self.log_alpha.exp() * (qc_ood.mean() - self.qc_thres)
         self.cost_critic_optim.zero_grad()
         loss_cost_critic.backward()
         self.cost_critic_optim.step()
 
         # update alpha
-        self.log_alpha += self.alpha_lr * self.log_alpha.exp() * (
-            self.qc_thres - qc_ood.mean()).detach()
+        self.log_alpha += (
+            self.alpha_lr
+            * self.log_alpha.exp()
+            * (self.qc_thres - qc_ood.mean()).detach()
+        )
         self.log_alpha.data.clamp_(min=-5.0, max=5.0)
 
         stats_cost_critic = {
             "loss/cost_critic_loss": loss_cost_critic.item(),
-            "loss/alpha_value": self.log_alpha.exp().item()
+            "loss/alpha_value": self.log_alpha.exp().item(),
         }
         return loss_cost_critic, stats_cost_critic
 
@@ -293,15 +318,19 @@ class CPQ(nn.Module):
         if self.discrete_action:
             with torch.no_grad():
                 batch_size = observations.shape[0]
-                action_grid = torch.eye(self.action_dim,
-                                        device=observations.device,
-                                        dtype=observations.dtype)
+                action_grid = torch.eye(
+                    self.action_dim,
+                    device=observations.device,
+                    dtype=observations.dtype,
+                )
                 action_grid = action_grid.unsqueeze(0).repeat(batch_size, 1, 1)
-                action_grid = action_grid.reshape(batch_size * self.action_dim,
-                                                  self.action_dim)
+                action_grid = action_grid.reshape(
+                    batch_size * self.action_dim, self.action_dim
+                )
                 obs_repeated = observations.unsqueeze(1).repeat(1, self.action_dim, 1)
-                obs_repeated = obs_repeated.reshape(batch_size * self.action_dim,
-                                                    self.state_dim)
+                obs_repeated = obs_repeated.reshape(
+                    batch_size * self.action_dim, self.state_dim
+                )
                 q_all, _ = self.critic.predict(obs_repeated, action_grid)
                 qc_all, _ = self.cost_critic.predict(obs_repeated, action_grid)
                 q_all = q_all.reshape(batch_size, self.action_dim)
@@ -336,43 +365,50 @@ class CPQ(nn.Module):
     def setup_optimizers(self, actor_lr, critic_lr, alpha_lr, vae_lr):
         self.actor_optim = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optim = torch.optim.Adam(self.critic.parameters(), lr=critic_lr)
-        self.cost_critic_optim = torch.optim.Adam(self.cost_critic.parameters(),
-                                                  lr=critic_lr)
+        self.cost_critic_optim = torch.optim.Adam(
+            self.cost_critic.parameters(), lr=critic_lr
+        )
         self.vae_optim = torch.optim.Adam(self.vae.parameters(), lr=vae_lr)
         self.alpha_lr = alpha_lr
 
-    def act(self,
-            obs: np.ndarray,
-            deterministic: bool = False,
-            with_logprob: bool = False):
+    def act(
+        self, obs: np.ndarray, deterministic: bool = False, with_logprob: bool = False
+    ):
         """
         Given a single obs, return the action, logp.
         """
         obs = torch.tensor(obs[None, ...], dtype=torch.float32).to(self.device)
         if self.discrete_action:
             action_ids, logp_a = self.actor(obs, deterministic, with_logprob)
-            a = action_ids.data.numpy(
-            ) if self.device == "cpu" else action_ids.data.cpu().numpy()
+            a = (
+                action_ids.data.numpy()
+                if self.device == "cpu"
+                else action_ids.data.cpu().numpy()
+            )
             if logp_a is None:
                 logp_np = None
             else:
-                logp_np = logp_a.data.numpy(
-                ) if self.device == "cpu" else logp_a.data.cpu().numpy()
+                logp_np = (
+                    logp_a.data.numpy()
+                    if self.device == "cpu"
+                    else logp_a.data.cpu().numpy()
+                )
             action_out = int(np.squeeze(a, axis=0))
             if logp_np is None:
                 return action_out, None
             return action_out, float(np.squeeze(logp_np))
         a, logp_a = self._actor_forward(obs, deterministic, with_logprob)
         a = a.data.numpy() if self.device == "cpu" else a.data.cpu().numpy()
-        logp_a = logp_a.data.numpy() if self.device == "cpu" else logp_a.data.cpu(
-        ).numpy()
+        logp_a = (
+            logp_a.data.numpy() if self.device == "cpu" else logp_a.data.cpu().numpy()
+        )
         return np.squeeze(a, axis=0), np.squeeze(logp_a)
 
 
 class CPQTrainer:
     """
     Constraints Penalized Q-learning Trainer
-    
+
     Args:
         model (CPQ): The CPQ model to be trained.
         env (gym.Env): The OpenAI Gym environment to train the model in.
@@ -387,18 +423,19 @@ class CPQTrainer:
     """
 
     def __init__(
-            self,
-            model: CPQ,
-            env: gym.Env,
-            logger: WandbLogger = DummyLogger(),
-            # training params
-            actor_lr: float = 1e-4,
-            critic_lr: float = 1e-4,
-            alpha_lr: float = 1e-4,
-            vae_lr: float = 1e-4,
-            reward_scale: float = 1.0,
-            cost_scale: float = 1.0,
-            device="cpu") -> None:
+        self,
+        model: CPQ,
+        env: gym.Env,
+        logger: WandbLogger = DummyLogger(),
+        # training params
+        actor_lr: float = 1e-4,
+        critic_lr: float = 1e-4,
+        alpha_lr: float = 1e-4,
+        vae_lr: float = 1e-4,
+        reward_scale: float = 1.0,
+        cost_scale: float = 1.0,
+        device="cpu",
+    ) -> None:
 
         self.model = model
         self.logger = logger
@@ -408,17 +445,19 @@ class CPQTrainer:
         self.device = device
         self.model.setup_optimizers(actor_lr, critic_lr, alpha_lr, vae_lr)
 
-    def train_one_step(self, observations, next_observations, actions, rewards, costs,
-                       done):
+    def train_one_step(
+        self, observations, next_observations, actions, rewards, costs, done
+    ):
         # update VAE
         loss_vae, stats_vae = self.model.vae_loss(observations, actions)
         # update critic
-        loss_critic, stats_critic = self.model.critic_loss(observations,
-                                                           next_observations, actions,
-                                                           rewards, done)
+        loss_critic, stats_critic = self.model.critic_loss(
+            observations, next_observations, actions, rewards, done
+        )
         # update cost critic
         loss_cost_critic, stats_cost_critic = self.model.cost_critic_loss(
-            observations, next_observations, actions, costs, done)
+            observations, next_observations, actions, costs, done
+        )
         # update actor
         loss_actor, stats_actor = self.model.actor_loss(observations)
 
@@ -441,8 +480,11 @@ class CPQTrainer:
             episode_lens.append(epi_len)
             episode_costs.append(epi_cost)
         self.model.train()
-        return np.mean(episode_rets) / self.reward_scale, np.mean(
-            episode_costs) / self.cost_scale, np.mean(episode_lens)
+        return (
+            np.mean(episode_rets) / self.reward_scale,
+            np.mean(episode_costs) / self.cost_scale,
+            np.mean(episode_lens),
+        )
 
     @torch.no_grad()
     def rollout(self):

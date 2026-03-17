@@ -4,8 +4,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from fsrl.utils import DummyLogger, WandbLogger
-from torch import distributions as pyd
-from torch.distributions.beta import Beta
 from torch.nn import functional as F  # noqa
 from tqdm.auto import trange  # noqa
 
@@ -19,30 +17,32 @@ def get_f_div_fn(f_type: str):
     f_fn = None
     f_prime_inv_fn = None
 
-    if f_type == 'chi2':
-        f_fn = lambda x: 0.5 * (x - 1)**2
+    if f_type == "chi2":
+        f_fn = lambda x: 0.5 * (x - 1) ** 2
         f_prime_inv_fn = lambda x: x + 1
 
-    elif f_type == 'softchi':
-        f_fn = lambda x: torch.where(x < 1,
-                                     x * (torch.log(x + 1e-10) - 1) + 1, 0.5 *
-                                     (x - 1)**2)
-        f_prime_inv_fn = lambda x: torch.where(x < 0, torch.exp(x.clamp(max=0.0)), x + 1)
+    elif f_type == "softchi":
+        f_fn = lambda x: torch.where(
+            x < 1, x * (torch.log(x + 1e-10) - 1) + 1, 0.5 * (x - 1) ** 2
+        )
+        f_prime_inv_fn = lambda x: torch.where(
+            x < 0, torch.exp(x.clamp(max=0.0)), x + 1
+        )
 
-    elif f_type == 'kl':
+    elif f_type == "kl":
         f_fn = lambda x: x * torch.log(x + 1e-10)
         f_prime_inv_fn = lambda x: torch.exp(x - 1)
     else:
-        raise NotImplementedError('Not implemented f_fn:', f_type)
+        raise NotImplementedError("Not implemented f_fn:", f_type)
 
     return f_fn, f_prime_inv_fn
 
 
 class COptiDICE(nn.Module):
     """
-    Offline Constrained Policy Optimization 
+    Offline Constrained Policy Optimization
     via stationary DIstribution Correction Estimation (COptiDICE)
-    
+
     Args:
         state_dim (int): dimension of the state space.
         action_dim (int): dimension of the action space.
@@ -51,9 +51,9 @@ class COptiDICE(nn.Module):
         init_state_propotion (float): The proportion of initial states to include in the optimization.
         observations_std (np.ndarray): The standard deviation of the observation space.
         actions_std (np.ndarray): The standard deviation of the action space.
-        a_hidden_sizes (list): List of integers specifying the sizes 
+        a_hidden_sizes (list): List of integers specifying the sizes
                                of the layers in the actor network.
-        c_hidden_sizes (list): List of integers specifying the sizes 
+        c_hidden_sizes (list): List of integers specifying the sizes
                                of the layers in the critic network (nu and chi networks).
         gamma (float): Discount factor for the reward.
         alpha (float): The coefficient for the cost term in the loss function.
@@ -62,27 +62,29 @@ class COptiDICE(nn.Module):
         num_chi (int): The number of critics to use for the chi-network.
         cost_limit (int): Upper limit on the cost per episode.
         episode_len (int): Maximum length of an episode.
-        device (str): Device to run the model on (e.g. 'cpu' or 'cuda:0'). 
+        device (str): Device to run the model on (e.g. 'cpu' or 'cuda:0').
     """
 
-    def __init__(self,
-                 state_dim: int,
-                 action_dim: int,
-                 max_action: float,
-                 f_type: str,
-                 init_state_propotion: float,
-                 observations_std: np.ndarray,
-                 actions_std: np.ndarray,
-                 a_hidden_sizes: list = [128, 128],
-                 c_hidden_sizes: list = [128, 128],
-                 gamma: float = 0.99,
-                 alpha: float = 0.5,
-                 cost_ub_epsilon: float = 0.01,
-                 num_nu: int = 1,
-                 num_chi: int = 1,
-                 cost_limit: int = 10,
-                 episode_len: int = 300,
-                 device: str = "cpu"):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        max_action: float,
+        f_type: str,
+        init_state_propotion: float,
+        observations_std: np.ndarray,
+        actions_std: np.ndarray,
+        a_hidden_sizes: list = [128, 128],
+        c_hidden_sizes: list = [128, 128],
+        gamma: float = 0.99,
+        alpha: float = 0.5,
+        cost_ub_epsilon: float = 0.01,
+        num_nu: int = 1,
+        num_chi: int = 1,
+        cost_limit: int = 10,
+        episode_len: int = 300,
+        device: str = "cpu",
+    ):
         super().__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -98,23 +100,23 @@ class COptiDICE(nn.Module):
         self.episode_len = episode_len
         self.device = device
 
-        self.qc_thres = cost_limit * (1 - self.gamma**self.episode_len) / (
-            1 - self.gamma) / self.episode_len
+        self.qc_thres = (
+            cost_limit
+            * (1 - self.gamma**self.episode_len)
+            / (1 - self.gamma)
+            / self.episode_len
+        )
         self.tau = torch.ones(1, requires_grad=True, device=self.device)
         self.lmbda = torch.ones(1, requires_grad=True, device=self.device)
-        self.actor = SquashedGaussianMLPActor(self.state_dim, self.action_dim,
-                                              self.a_hidden_sizes,
-                                              nn.ReLU).to(self.device)
-        self.nu_network = EnsembleQCritic(self.state_dim,
-                                          0,
-                                          self.c_hidden_sizes,
-                                          nn.ReLU,
-                                          num_q=self.num_nu).to(self.device)
-        self.chi_network = EnsembleQCritic(self.state_dim,
-                                           0,
-                                           self.c_hidden_sizes,
-                                           nn.ReLU,
-                                           num_q=self.num_chi).to(self.device)
+        self.actor = SquashedGaussianMLPActor(
+            self.state_dim, self.action_dim, self.a_hidden_sizes, nn.ReLU
+        ).to(self.device)
+        self.nu_network = EnsembleQCritic(
+            self.state_dim, 0, self.c_hidden_sizes, nn.ReLU, num_q=self.num_nu
+        ).to(self.device)
+        self.chi_network = EnsembleQCritic(
+            self.state_dim, 0, self.c_hidden_sizes, nn.ReLU, num_q=self.num_chi
+        ).to(self.device)
 
         self.f_fn, self.f_prime_inv_fn = get_f_div_fn(f_type)
 
@@ -137,9 +139,9 @@ class COptiDICE(nn.Module):
         # 1. Learn the optimal distribution
         self._lmbda = F.softplus(self.lmbda)  # lmbda >= 0
 
-        nu_s, nu_s_next, e_nu_lambda, w_sa = self._optimal_w(observations,
-                                                             next_observations, rewards,
-                                                             costs, done)
+        nu_s, nu_s_next, e_nu_lambda, w_sa = self._optimal_w(
+            observations, next_observations, rewards, costs, done
+        )
         nu_init = nu_s * is_init / self.init_state_propotion
         w_sa_no_grad = w_sa.detach()
         # divergence between distributions of policy & dataset
@@ -161,8 +163,9 @@ class COptiDICE(nn.Module):
             chi_s_next, _ = self.chi_network.predict(next_observations, None)
             chi_init = chi_s * is_init / self.init_state_propotion
 
-            ell = (1- self.gamma) * chi_init + \
-                    w_sa_no_grad * (costs + self.gamma * (1 - done) * chi_s_next - chi_s)
+            ell = (1 - self.gamma) * chi_init + w_sa_no_grad * (
+                costs + self.gamma * (1 - done) * chi_s_next - chi_s
+            )
             logits = ell / self._tau.detach()
             weights = torch.softmax(logits, dim=0) * batch_size
             log_weights = torch.log_softmax(logits, dim=0) + np.log(batch_size)
@@ -182,8 +185,9 @@ class COptiDICE(nn.Module):
             self.tau_optim.step()
 
         # 1.2 nu loss
-        nu_loss = (1 - self.gamma) * nu_init.mean() + \
-            (w_sa * e_nu_lambda - self.alpha * self.f_fn(w_sa)).mean()
+        nu_loss = (1 - self.gamma) * nu_init.mean() + (
+            w_sa * e_nu_lambda - self.alpha * self.f_fn(w_sa)
+        ).mean()
         td_error = e_nu_lambda.pow(2).mean()
 
         self.nu_optim.zero_grad()
@@ -204,8 +208,9 @@ class COptiDICE(nn.Module):
         _, _, dist = self.actor.forward(observations + obs_eps, False, True, True)
 
         with torch.no_grad():
-            _, _, e_nu_lambda, w_sa = self._optimal_w(observations, next_observations,
-                                                      rewards, costs, done)
+            _, _, e_nu_lambda, w_sa = self._optimal_w(
+                observations, next_observations, rewards, costs, done
+            )
 
         actor_loss = -(w_sa * dist.log_prob(actions + act_eps).sum(axis=-1)).mean()
         self.actor_optim.zero_grad()
@@ -222,7 +227,7 @@ class COptiDICE(nn.Module):
             "loss/lmbda_loss": lmbda_loss.item(),
             "loss/actor_loss": actor_loss.item(),
             "loss/tau": self._tau.item(),
-            "loss/lmbda": self._lmbda.item()
+            "loss/lmbda": self._lmbda.item(),
         }
         return stats_loss
 
@@ -233,25 +238,25 @@ class COptiDICE(nn.Module):
         self.lmbda_optim = torch.optim.Adam([self.lmbda], lr=scalar_lr)
         self.tau_optim = torch.optim.Adam([self.tau], lr=scalar_lr)
 
-    def act(self,
-            obs: np.ndarray,
-            deterministic: bool = False,
-            with_logprob: bool = False):
+    def act(
+        self, obs: np.ndarray, deterministic: bool = False, with_logprob: bool = False
+    ):
         """
         Given a single obs, return the action, logp.
         """
         obs = torch.tensor(obs[None, ...], dtype=torch.float32).to(self.device)
         a, logp_a = self.actor.forward(obs, deterministic, with_logprob)
         a = a.data.numpy() if self.device == "cpu" else a.data.cpu().numpy()
-        logp_a = logp_a.data.numpy() if self.device == "cpu" else logp_a.data.cpu(
-        ).numpy()
+        logp_a = (
+            logp_a.data.numpy() if self.device == "cpu" else logp_a.data.cpu().numpy()
+        )
         return np.squeeze(a, axis=0), np.squeeze(logp_a)
 
 
 class COptiDICETrainer:
     """
     COptiDICE trainer
-    
+
     Args:
         model (COptiDICE): The COptiDICE model to train.
         env (gym.Env): The OpenAI Gym environment to train the model in.
@@ -264,16 +269,18 @@ class COptiDICETrainer:
         device (str): The device to use for training (e.g. "cpu" or "cuda").
     """
 
-    def __init__(self,
-                 model: COptiDICE,
-                 env: gym.Env,
-                 logger: WandbLogger = DummyLogger(),
-                 actor_lr: float = 1e-3,
-                 critic_lr: float = 1e-3,
-                 scalar_lr: float = 1e-3,
-                 reward_scale: float = 1.0,
-                 cost_scale: float = 1.0,
-                 device="cpu"):
+    def __init__(
+        self,
+        model: COptiDICE,
+        env: gym.Env,
+        logger: WandbLogger = DummyLogger(),
+        actor_lr: float = 1e-3,
+        critic_lr: float = 1e-3,
+        scalar_lr: float = 1e-3,
+        reward_scale: float = 1.0,
+        cost_scale: float = 1.0,
+        device="cpu",
+    ):
         self.model = model
         self.logger = logger
         self.env = env
@@ -298,8 +305,11 @@ class COptiDICETrainer:
             episode_lens.append(epi_len)
             episode_costs.append(epi_cost)
         self.model.train()
-        return np.mean(episode_rets) / self.reward_scale, np.mean(
-            episode_costs) / self.cost_scale, np.mean(episode_lens)
+        return (
+            np.mean(episode_rets) / self.reward_scale,
+            np.mean(episode_costs) / self.cost_scale,
+            np.mean(episode_lens),
+        )
 
     @torch.no_grad()
     def rollout(self):
