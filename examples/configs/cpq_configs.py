@@ -1,5 +1,5 @@
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 from pyrallis import field
 
@@ -369,5 +369,5 @@ CPQ_DEFAULT_CONFIG = {
     "OfflineMetadrive-mediumdense-v0": CPQMediumDenseConfig,
     "OfflineMetadrive-hardsparse-v0": CPQHardSparseConfig,
     "OfflineMetadrive-hardmean-v0": CPQHardMeanConfig,
-    "OfflineMetadrive-harddense-v0": CPQHardDenseConfig
+    "OfflineMetadrive-harddense-v0": CPQHardDenseConfig,
 }

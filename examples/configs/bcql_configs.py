@@ -1,5 +1,5 @@
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 from pyrallis import field
 
@@ -370,5 +370,5 @@ BCQL_DEFAULT_CONFIG = {
     "OfflineMetadrive-mediumdense-v0": BCQLMediumDenseConfig,
     "OfflineMetadrive-hardsparse-v0": BCQLHardSparseConfig,
     "OfflineMetadrive-hardmean-v0": BCQLHardMeanConfig,
-    "OfflineMetadrive-harddense-v0": BCQLHardDenseConfig
+    "OfflineMetadrive-harddense-v0": BCQLHardDenseConfig,
 }

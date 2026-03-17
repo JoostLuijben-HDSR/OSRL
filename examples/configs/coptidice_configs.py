@@ -1,5 +1,5 @@
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 from pyrallis import field
 
@@ -366,5 +366,5 @@ COptiDICE_DEFAULT_CONFIG = {
     "OfflineMetadrive-mediumdense-v0": COptiDICEMediumDenseConfig,
     "OfflineMetadrive-hardsparse-v0": COptiDICEHardSparseConfig,
     "OfflineMetadrive-hardmean-v0": COptiDICEHardMeanConfig,
-    "OfflineMetadrive-harddense-v0": COptiDICEHardDenseConfig
+    "OfflineMetadrive-harddense-v0": COptiDICEHardDenseConfig,
 }

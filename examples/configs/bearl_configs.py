@@ -1,5 +1,5 @@
-from dataclasses import asdict, dataclass
-from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 from pyrallis import field
 
@@ -374,5 +374,5 @@ BEARL_DEFAULT_CONFIG = {
     "OfflineMetadrive-mediumdense-v0": BEARLMediumDenseConfig,
     "OfflineMetadrive-hardsparse-v0": BEARLHardSparseConfig,
     "OfflineMetadrive-hardmean-v0": BEARLHardMeanConfig,
-    "OfflineMetadrive-harddense-v0": BEARLHardDenseConfig
+    "OfflineMetadrive-harddense-v0": BEARLHardDenseConfig,
 }
