@@ -66,7 +66,6 @@ class BCQL(nn.Module):
         episode_len: int = 300,
         device: str = "cpu",
     ):
-
         super().__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -306,7 +305,6 @@ class BCQLTrainer:
         cost_scale: float = 1.0,
         device="cpu",
     ):
-
         self.model = model
         self.logger = logger
         self.env = env

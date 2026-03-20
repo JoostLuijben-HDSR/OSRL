@@ -72,7 +72,6 @@ class BEARL(nn.Module):
         start_update_policy_step: int = 20_000,
         device: str = "cpu",
     ):
-
         super().__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -422,7 +421,6 @@ class BEARLTrainer:
         cost_scale: float = 1.0,
         device="cpu",
     ):
-
         self.model = model
         self.logger = logger
         self.env = env

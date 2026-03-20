@@ -32,7 +32,6 @@ class BC(nn.Module):
         episode_len: int = 300,
         device: str = "cpu",
     ):
-
         super().__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -96,7 +95,6 @@ class BCTrainer:
         cost_limit: int = 10,
         device="cpu",
     ):
-
         self.model = model
         self.logger = logger
         self.env = env

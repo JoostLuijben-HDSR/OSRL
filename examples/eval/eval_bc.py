@@ -22,7 +22,6 @@ class EvalConfig:
 
 @pyrallis.wrap()
 def eval(args: EvalConfig):
-
     cfg, model = load_config_and_model(args.path, args.best)
     seed_all(cfg["seed"])
     if args.device == "cpu":

@@ -86,7 +86,6 @@ class CPQ(nn.Module):
         device: str = "cpu",
         discrete_action: bool = False,
     ):
-
         super().__init__()
         self.a_hidden_sizes = a_hidden_sizes
         self.c_hidden_sizes = c_hidden_sizes
@@ -436,7 +435,6 @@ class CPQTrainer:
         cost_scale: float = 1.0,
         device="cpu",
     ) -> None:
-
         self.model = model
         self.logger = logger
         self.env = env
